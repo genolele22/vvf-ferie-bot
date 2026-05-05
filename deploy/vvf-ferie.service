@@ -1,0 +1,15 @@
+[Unit]
+Description=VVF Ferie Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/vvf-ferie-bot
+EnvironmentFile=/opt/vvf-ferie-bot/.env
+ExecStart=/opt/vvf-ferie-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
