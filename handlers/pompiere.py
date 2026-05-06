@@ -1,5 +1,5 @@
 """
-Handlers per il pompiere: /start, /ferie, /mie_richieste.
+Handlers per il pompiere: /start, /aggiorna_password, /ferie, /mie_richieste.
 """
 
 import logging
@@ -17,14 +17,16 @@ from telegram.ext import (
 
 import calendar_turni as cal
 import database as db
+import email_service
 from config import TELEGRAM_CAPOTURNO_ID
+from crypto import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
 
 # ── STATI ─────────────────────────────────────────────────────────────────────
 
-# /start
-S_NOME, S_COGNOME = range(2)
+# /start e /aggiorna_password
+S_EMAIL, S_PASSWORD = range(2)
 
 # /ferie
 F_MESE, F_DATA, F_TIPO, F_CONFERMA = range(4)
@@ -67,51 +69,84 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(
             f"Sei già registrato come {user['nome']} {user['cognome']} "
             f"(gruppo {user['gruppo_turno']}).\n\n"
-            "Usa /ferie per richiedere ferie o /mie_richieste per vedere lo storico."
+            "Usa /ferie per richiedere ferie o /mie_richieste per vedere lo storico.\n"
+            "Per aggiornare la password email usa /aggiorna_password."
         )
         return ConversationHandler.END
 
     await update.message.reply_text(
         "Benvenuto nel sistema ferie — Comando VVF Genova.\n\n"
-        "Inserisci il tuo *nome*:",
+        "Inserisci la tua *email istituzionale* vigilfuoco.it:",
         parse_mode="Markdown",
     )
-    return S_NOME
+    return S_EMAIL
 
 
-async def start_ricevi_nome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    nome = update.message.text.strip()
-    if not nome:
-        await update.message.reply_text("Nome non valido. Riprova:")
-        return S_NOME
-    context.user_data["reg_nome"] = nome
-    await update.message.reply_text("Inserisci il tuo *cognome*:", parse_mode="Markdown")
-    return S_COGNOME
+async def start_ricevi_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    email = update.message.text.strip().lower()
 
+    if not email.endswith("@vigilfuoco.it"):
+        await update.message.reply_text(
+            "Inserisci un indirizzo @vigilfuoco.it valido:"
+        )
+        return S_EMAIL
 
-async def start_ricevi_cognome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    nome    = context.user_data.pop("reg_nome", "")
-    cognome = update.message.text.strip()
-
-    user = db.find_user_by_name(nome, cognome)
+    user = db.find_user_by_email(email)
     if not user:
         await update.message.reply_text(
-            "Non ho trovato nessun vigile con questo nome.\n"
-            "Controlla l'ortografia o contatta il responsabile per la registrazione."
+            "Email non trovata in anagrafica.\n"
+            "Controlla l'indirizzo o contatta il responsabile."
         )
         return ConversationHandler.END
 
     if user["telegram_id"] and user["telegram_id"] != update.effective_user.id:
         await update.message.reply_text(
-            "Questo nominativo è già associato a un altro account Telegram.\n"
+            "Questa email è già associata a un altro account Telegram.\n"
             "Contatta il responsabile."
         )
         return ConversationHandler.END
 
-    db.set_telegram_id(user["id"], update.effective_user.id)
+    context.user_data["reg_user_id"] = user["id"]
+    context.user_data["reg_nome"] = user["nome"]
+    context.user_data["reg_email"] = email
+
     await update.message.reply_text(
-        f"Registrazione completata.\n\n"
-        f"Ciao *{user['nome']} {user['cognome']}*, gruppo *{user['gruppo_turno']}*.\n\n"
+        f"Trovato: *{user['nome']} {user['cognome']}*, gruppo *{user['gruppo_turno']}*.\n\n"
+        "Inserisci la tua *password email* vigilfuoco.it\n"
+        "_(il messaggio verrà eliminato automaticamente)_",
+        parse_mode="Markdown",
+    )
+    return S_PASSWORD
+
+
+async def start_ricevi_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text
+    email = context.user_data.get("reg_email", "")
+    user_id = context.user_data.get("reg_user_id")
+    nome = context.user_data.get("reg_nome", "")
+
+    # Cancella subito il messaggio con la password dalla chat
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text("Verifico le credenziali...")
+
+    if not email_service.test_smtp(email, password):
+        await update.message.reply_text(
+            "Password non corretta o server non raggiungibile.\n"
+            "Riprova con /start."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    db.set_telegram_id(user_id, update.effective_user.id)
+    db.set_email_password(user_id, encrypt(password))
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        f"Registrazione completata, *{nome}*.\n\n"
         "Usa /ferie per richiedere ferie.",
         parse_mode="Markdown",
     )
@@ -128,11 +163,75 @@ def build_start_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            S_NOME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_nome)],
-            S_COGNOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_cognome)],
+            S_EMAIL:    [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_email)],
+            S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_password)],
         },
         fallbacks=[CommandHandler("cancel", start_cancel)],
         name="start_conv",
+        persistent=False,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# /aggiorna_password
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def aggiorna_password_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await _get_registered_user(update)
+    if not user:
+        return ConversationHandler.END
+
+    context.user_data["upd_user_id"] = user["id"]
+    context.user_data["upd_email"] = user["email"]
+
+    await update.message.reply_text(
+        "Inserisci la nuova *password email* vigilfuoco.it\n"
+        "_(il messaggio verrà eliminato automaticamente)_",
+        parse_mode="Markdown",
+    )
+    return S_PASSWORD
+
+
+async def aggiorna_password_ricevi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text
+    user_id = context.user_data.get("upd_user_id")
+    email = context.user_data.get("upd_email", "")
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text("Verifico le credenziali...")
+
+    if not email_service.test_smtp(email, password):
+        await update.message.reply_text(
+            "Password non corretta o server non raggiungibile. Riprova."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    db.set_email_password(user_id, encrypt(password))
+    context.user_data.clear()
+
+    await update.message.reply_text("Password aggiornata.")
+    return ConversationHandler.END
+
+
+async def aggiorna_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("Operazione annullata.")
+    return ConversationHandler.END
+
+
+def build_aggiorna_password_handler() -> ConversationHandler:
+    return ConversationHandler(
+        entry_points=[CommandHandler("aggiorna_password", aggiorna_password_start)],
+        states={
+            S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiorna_password_ricevi)],
+        },
+        fallbacks=[CommandHandler("cancel", aggiorna_cancel)],
+        name="aggiorna_password_conv",
         persistent=False,
     )
 
@@ -146,9 +245,20 @@ async def ferie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not user:
         return ConversationHandler.END
 
+    if not user["email_password_enc"]:
+        await update.message.reply_text(
+            "Password email non configurata. Usa /aggiorna_password."
+        )
+        return ConversationHandler.END
+
     context.user_data["ferie"] = {
-        "user_id": user["id"],
-        "gruppo":  user["gruppo_turno"],
+        "user_id":  user["id"],
+        "gruppo":   user["gruppo_turno"],
+        "email":    user["email"],
+        "password": decrypt(user["email_password_enc"]),
+        "nome":     user["nome"],
+        "cognome":  user["cognome"],
+        "distaccamento": user["distaccamento"],
     }
 
     oggi = date.today()
@@ -163,9 +273,7 @@ async def ferie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         ))
 
     kbd = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.message.reply_text(
-        "Seleziona il mese:", reply_markup=kbd
-    )
+    await update.message.reply_text("Seleziona il mese:", reply_markup=kbd)
     return F_MESE
 
 
@@ -224,12 +332,10 @@ async def ferie_scegli_data(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     d = date.fromisoformat(data_iso)
 
     if tipo_cal == "D":
-        buttons = [
-            [
-                InlineKeyboardButton("🌅 Solo Diurno",      callback_data="t:D"),
-                InlineKeyboardButton("🌅🌙 Entrambi (D+N)", callback_data="t:DN"),
-            ]
-        ]
+        buttons = [[
+            InlineKeyboardButton("🌅 Solo Diurno",      callback_data="t:D"),
+            InlineKeyboardButton("🌅🌙 Entrambi (D+N)", callback_data="t:DN"),
+        ]]
     else:
         buttons = [[InlineKeyboardButton("🌙 Solo Notturno", callback_data="t:N")]]
 
@@ -251,7 +357,7 @@ async def ferie_scegli_tipo(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     d      = date.fromisoformat(w["data"])
     turni  = 2 if tipo == "DN" else 1
-    d_fine = d.replace(day=d.day + 1) if tipo == "DN" else d  # N è sempre il giorno dopo
+    d_fine = d.replace(day=d.day + 1) if tipo == "DN" else d
 
     testo = (
         f"*Riepilogo richiesta*\n\n"
@@ -279,21 +385,40 @@ async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("Richiesta annullata.")
         return ConversationHandler.END
 
-    w         = context.user_data.pop("ferie", {})
-    user_id   = w["user_id"]
-    data_iso  = w["data"]
-    tipo      = w["tipo"]
+    w        = context.user_data.pop("ferie", {})
+    user_id  = w["user_id"]
+    data_iso = w["data"]
+    tipo     = w["tipo"]
 
     request_id = db.insert_request(user_id, data_iso, tipo)
 
     await query.edit_message_text(
-        f"Richiesta *#{request_id}* ricevuta.\n"
-        "Riceverai risposta entro ridosso della data.",
+        f"Richiesta *#{request_id}* inviata.\n"
+        "Riceverai risposta via email dal capoturno.",
         parse_mode="Markdown",
     )
 
-    # Notifica al capoturno
-    await _notifica_capoturno(context, request_id, user_id, data_iso, tipo)
+    ok = email_service.send_ferie_request(
+        pompiere_email=w["email"],
+        pompiere_password=w["password"],
+        pompiere_nome=w["nome"],
+        pompiere_cognome=w["cognome"],
+        distaccamento=w["distaccamento"],
+        gruppo=w["gruppo"],
+        request_id=request_id,
+        data_iso=data_iso,
+        tipo=tipo,
+    )
+
+    if not ok:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⚠️ Richiesta registrata ma l'email non è stata inviata.\n"
+                 "Controlla la password con /aggiorna_password.",
+        )
+
+    # Notifica informativa al capoturno su Telegram (senza bottoni)
+    await _notifica_capoturno_telegram(context, request_id, w)
 
     return ConversationHandler.END
 
@@ -335,10 +460,10 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     righe = []
     for r in richieste:
-        d         = date.fromisoformat(r["data_richiesta"])
-        emoji     = _stato_emoji(r["stato"])
-        tipo_str  = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
-        riga      = f"{emoji} *#{r['id']}* {d.strftime('%d/%m/%Y')} — {tipo_str}"
+        d        = date.fromisoformat(r["data_richiesta"])
+        emoji    = _stato_emoji(r["stato"])
+        tipo_str = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
+        riga     = f"{emoji} *#{r['id']}* {d.strftime('%d/%m/%Y')} — {tipo_str}"
         if r["stato"] == "rejected" and r["note_rifiuto"]:
             riga += f"\n   ↳ _{r['note_rifiuto']}_"
         righe.append(riga)
@@ -350,42 +475,27 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NOTIFICA CAPOTURNO
+# NOTIFICA TELEGRAM CAPOTURNO (solo informativa, risposta via email)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _notifica_capoturno(
+async def _notifica_capoturno_telegram(
     context: ContextTypes.DEFAULT_TYPE,
     request_id: int,
-    user_id: int,
-    data_iso: str,
-    tipo: str,
+    w: dict,
 ) -> None:
-    user   = db.find_user_by_telegram_id  # evita seconda query: usiamo user_id diretto
-    # Recuperiamo i dati utente tramite id (query separata)
-    with db.get_conn() as conn:
-        vigile = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-    if not vigile:
-        return
-
-    d = date.fromisoformat(data_iso)
+    d = date.fromisoformat(w["data"])
     testo = (
-        f"Nuova richiesta ferie *#{request_id}*\n\n"
-        f"Vigile: {vigile['nome']} {vigile['cognome']}\n"
-        f"Gruppo: {vigile['gruppo_turno']}\n"
-        f"Distaccamento: {vigile['distaccamento']}\n"
-        f"Data: {d.strftime('%d/%m/%Y')}\n"
-        f"Turno: {TIPO_LABEL[tipo]}"
+        f"📋 Nuova richiesta ferie *#{request_id}*\n\n"
+        f"Vigile: {w['nome']} {w['cognome']}\n"
+        f"Gruppo: {w['gruppo']} — {w['distaccamento']}\n"
+        f"Data: {d.strftime('%d/%m/%Y')} — {TIPO_LABEL[w['tipo']]}\n\n"
+        f"_Rispondi via email a {w['email']}_"
     )
-    kbd = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Approva", callback_data=f"approve:{request_id}"),
-        InlineKeyboardButton("❌ Rifiuta", callback_data=f"reject:{request_id}"),
-    ]])
     try:
         await context.bot.send_message(
             chat_id=TELEGRAM_CAPOTURNO_ID,
             text=testo,
             parse_mode="Markdown",
-            reply_markup=kbd,
         )
     except Exception as e:
-        logger.error("Errore notifica capoturno per richiesta #%d: %s", request_id, e)
+        logger.error("Errore notifica Telegram capoturno per richiesta #%d: %s", request_id, e)

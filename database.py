@@ -20,16 +20,17 @@ def init_db():
     with get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id     INTEGER UNIQUE,
-                nome            TEXT NOT NULL,
-                cognome         TEXT NOT NULL,
-                distaccamento   TEXT NOT NULL,
-                email           TEXT NOT NULL,
-                telefono        TEXT,
-                gruppo_turno    TEXT NOT NULL CHECK(gruppo_turno IN ('B1','B2','B3','B4','B5','B6','B7','B8')),
-                ruolo           TEXT NOT NULL CHECK(ruolo IN ('pompiere','capoturno')),
-                numero_vvf      INTEGER
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id         INTEGER UNIQUE,
+                nome                TEXT NOT NULL,
+                cognome             TEXT NOT NULL,
+                distaccamento       TEXT NOT NULL,
+                email               TEXT NOT NULL,
+                telefono            TEXT,
+                gruppo_turno        TEXT NOT NULL CHECK(gruppo_turno IN ('B1','B2','B3','B4','B5','B6','B7','B8')),
+                ruolo               TEXT NOT NULL CHECK(ruolo IN ('pompiere','capoturno')),
+                numero_vvf          INTEGER,
+                email_password_enc  TEXT
             );
 
             CREATE TABLE IF NOT EXISTS salto (
@@ -55,6 +56,21 @@ def init_db():
 
 
 # ── users ────────────────────────────────────────────────────────────────────
+
+def find_user_by_email(email: str) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM users WHERE lower(email)=lower(?)", (email,)
+        ).fetchone()
+
+
+def set_email_password(user_id: int, encrypted_password: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET email_password_enc=? WHERE id=?",
+            (encrypted_password, user_id),
+        )
+
 
 def find_user_by_name(nome: str, cognome: str) -> Optional[sqlite3.Row]:
     with get_conn() as conn:

@@ -10,8 +10,10 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 GOOGLE_SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 GOOGLE_DRIVE_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
 
-GMAIL_USER = os.environ["GMAIL_USER"]
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
+SMTP_HOST = os.environ["SMTP_HOST"]
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+CAPOTURNO_EMAIL = os.environ["CAPOTURNO_EMAIL"]
+ENCRYPTION_KEY = os.environ["ENCRYPTION_KEY"]
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "vvf_ferie.db"))
 CALENDARIO_PATH = os.environ.get("CALENDARIO_PATH", os.path.join(os.path.dirname(__file__), "data", "calendario.json"))

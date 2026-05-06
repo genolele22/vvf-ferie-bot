@@ -9,15 +9,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 import database as db
 from config import TELEGRAM_BOT_TOKEN
 from handlers.pompiere import (
+    build_aggiorna_password_handler,
     build_ferie_handler,
     build_start_handler,
     mie_richieste,
 )
-from handlers.capoturno import (
-    build_capoturno_callback_handler,
-    pending,
-    pending_data,
-)
+from handlers.capoturno import pending, pending_data
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -34,13 +31,13 @@ def main() -> None:
 
     # ── Pompiere ──────────────────────────────────────────────────────────────
     app.add_handler(build_start_handler())
+    app.add_handler(build_aggiorna_password_handler())
     app.add_handler(build_ferie_handler())
     app.add_handler(CommandHandler("mie_richieste", mie_richieste))
 
-    # ── Capoturno ─────────────────────────────────────────────────────────────
+    # ── Capoturno (solo consultazione) ────────────────────────────────────────
     app.add_handler(CommandHandler("pending",      pending))
     app.add_handler(CommandHandler("pending_data", pending_data))
-    app.add_handler(build_capoturno_callback_handler())
 
     logger.info("Bot avviato.")
     app.run_polling(drop_pending_updates=True)
