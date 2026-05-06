@@ -13,5 +13,5 @@ GOOGLE_DRIVE_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
 GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), "vvf_ferie.db")
-CALENDARIO_PATH = os.path.join(os.path.dirname(__file__), "data", "calendario.json")
+DATABASE_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "vvf_ferie.db"))
+CALENDARIO_PATH = os.environ.get("CALENDARIO_PATH", os.path.join(os.path.dirname(__file__), "data", "calendario.json"))

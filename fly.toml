@@ -1,0 +1,18 @@
+app = "vvf-ferie-bot"
+primary_region = "fra"
+
+[build]
+
+[env]
+  DATABASE_PATH = "/data/vvf_ferie.db"
+  CALENDARIO_PATH = "/data/calendario.json"
+  GOOGLE_SERVICE_ACCOUNT_JSON = "/tmp/credentials.json"
+
+[[mounts]]
+  source = "vvf_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
