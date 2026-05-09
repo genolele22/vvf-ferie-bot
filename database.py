@@ -181,6 +181,18 @@ def get_pending_requests_by_month(anno_mese: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def get_requests_by_date(data_iso: str) -> list[sqlite3.Row]:
+    """Tutte le richieste (qualsiasi stato) per una data specifica."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT r.*, u.nome, u.cognome, u.distaccamento, u.gruppo_turno, u.numero_vvf
+               FROM requests r JOIN users u ON r.user_id = u.id
+               WHERE r.data_richiesta = ?
+               ORDER BY u.cognome""",
+            (data_iso,),
+        ).fetchall()
+
+
 def approve_request(request_id: int):
     now = datetime.utcnow().isoformat(timespec="seconds")
     with get_conn() as conn:

@@ -18,6 +18,7 @@ from telegram.ext import (
 import calendar_turni as cal
 import database as db
 import email_service
+import sheets_service
 from config import TELEGRAM_CAPOTURNO_ID
 from crypto import decrypt, encrypt
 
@@ -385,6 +386,18 @@ async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "Riceverai risposta via email dal capoturno.",
         parse_mode="Markdown",
     )
+
+    # Registra su Google Sheets (fail silenzioso)
+    for request_id, data_iso, tipo in ids:
+        sheets_service.registra_richiesta(
+            request_id=request_id,
+            nome=w["nome"],
+            cognome=w["cognome"],
+            gruppo=w["gruppo"],
+            distaccamento=w["distaccamento"],
+            data_iso=data_iso,
+            tipo_turno=tipo,
+        )
 
     errori = []
     for request_id, data_iso, tipo in ids:

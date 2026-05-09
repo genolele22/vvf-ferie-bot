@@ -14,7 +14,7 @@ from handlers.pompiere import (
     build_start_handler,
     mie_richieste,
 )
-from handlers.capoturno import pending, pending_data
+from handlers.capoturno import pending, pending_data, build_genera_foglio_handler
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -36,7 +36,8 @@ def main() -> None:
     app.add_handler(CommandHandler("mie_richieste", mie_richieste))
     app.add_handler(MessageHandler(filters.Regex("^📋 Le mie richieste$"), mie_richieste))
 
-    # ── Capoturno (solo consultazione) ────────────────────────────────────────
+    # ── Capoturno ─────────────────────────────────────────────────────────────
+    app.add_handler(build_genera_foglio_handler())
     app.add_handler(CommandHandler("pending",      pending))
     app.add_handler(CommandHandler("pending_data", pending_data))
     app.add_handler(MessageHandler(filters.Regex("^📋 Richieste in attesa$"), pending))

@@ -11,5 +11,10 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 CAPOTURNO_EMAIL = os.environ["CAPOTURNO_EMAIL"]
 ENCRYPTION_KEY = os.environ["ENCRYPTION_KEY"]
 
-DATABASE_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "vvf_ferie.db"))
+DATABASE_PATH  = os.environ.get("DATABASE_PATH",  os.path.join(os.path.dirname(__file__), "vvf_ferie.db"))
 CALENDARIO_PATH = os.environ.get("CALENDARIO_PATH", os.path.join(os.path.dirname(__file__), "data", "calendario.json"))
+ODT_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "data", "templates")
+
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
