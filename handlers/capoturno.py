@@ -6,13 +6,18 @@ La risposta alle richieste avviene via email (Rispondi direttamente al messaggio
 import logging
 from datetime import date
 
-from telegram import Update
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 import database as db
 from config import TELEGRAM_CAPOTURNO_ID
 
 logger = logging.getLogger(__name__)
+
+MENU_CAPOTURNO = ReplyKeyboardMarkup(
+    [["📋 Richieste in attesa", "📅 Per mese"]],
+    resize_keyboard=True,
+)
 
 TIPO_LABEL = {
     "D":  "Diurno 🌅",
@@ -48,11 +53,12 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     richieste = db.get_pending_requests()
     if not richieste:
-        await update.message.reply_text("Nessuna richiesta in attesa.")
+        await update.message.reply_text("Nessuna richiesta in attesa.", reply_markup=MENU_CAPOTURNO)
         return
 
-    for r in richieste:
-        await update.message.reply_text(_format_request(r), parse_mode="Markdown")
+    for i, r in enumerate(richieste):
+        kbd = MENU_CAPOTURNO if i == len(richieste) - 1 else None
+        await update.message.reply_text(_format_request(r), parse_mode="Markdown", reply_markup=kbd)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -71,8 +77,9 @@ async def pending_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     richieste = db.get_pending_requests_by_month(anno_mese)
     if not richieste:
-        await update.message.reply_text(f"Nessuna richiesta in attesa per {anno_mese}.")
+        await update.message.reply_text(f"Nessuna richiesta in attesa per {anno_mese}.", reply_markup=MENU_CAPOTURNO)
         return
 
-    for r in richieste:
-        await update.message.reply_text(_format_request(r), parse_mode="Markdown")
+    for i, r in enumerate(richieste):
+        kbd = MENU_CAPOTURNO if i == len(richieste) - 1 else None
+        await update.message.reply_text(_format_request(r), parse_mode="Markdown", reply_markup=kbd)

@@ -15,9 +15,12 @@ TIPO_LABEL = {
 
 
 def _smtp_connect(email: str, password: str) -> smtplib.SMTP:
-    smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
-    smtp.ehlo()
-    smtp.starttls()
+    if SMTP_PORT == 465:
+        smtp = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
+    else:
+        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+        smtp.ehlo()
+        smtp.starttls()
     smtp.login(email, password)
     return smtp
 

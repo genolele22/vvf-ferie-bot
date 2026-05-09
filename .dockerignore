@@ -3,6 +3,5 @@ __pycache__/
 *.pyc
 *.db
 .env
-data/calendario.json
 deploy/
 .git/

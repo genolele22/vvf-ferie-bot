@@ -45,14 +45,15 @@ def date_in_servizio(gruppo: str, mesi: int = 6) -> list[tuple[date, str]]:
 
 def date_per_mese(gruppo: str, anno: int, mese: int) -> list[tuple[date, str]]:
     """
-    Restituisce i giorni di servizio (D/N) per un gruppo in un mese specifico.
+    Restituisce i giorni di riposo (D/N) per un gruppo in un mese specifico,
+    cioè i giorni in cui gli ALTRI gruppi sono in turno (e il gruppo indicato è a casa).
     NON filtra i Salto — il chiamante deve escluderli consultando il DB.
     """
     prefisso = f"{anno:04d}-{mese:02d}-"
     cal = _get_cal()
     result = []
     for date_str, entry in cal.items():
-        if date_str.startswith(prefisso) and entry["gruppo"] == gruppo:
+        if date_str.startswith(prefisso) and entry["gruppo"] != gruppo:
             result.append((date.fromisoformat(date_str), entry["tipo"]))
     return sorted(result)
 

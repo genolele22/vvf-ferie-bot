@@ -5,7 +5,7 @@ Handlers per il pompiere: /start, /aggiorna_password, /ferie, /mie_richieste.
 import logging
 from datetime import date
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -23,13 +23,18 @@ from crypto import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
 
+MENU_POMPIERE = ReplyKeyboardMarkup(
+    [["📅 Richiedi ferie", "📋 Le mie richieste"], ["🔑 Aggiorna password"]],
+    resize_keyboard=True,
+)
+
 # ── STATI ─────────────────────────────────────────────────────────────────────
 
 # /start e /aggiorna_password
 S_EMAIL, S_PASSWORD = range(2)
 
 # /ferie
-F_MESE, F_DATA, F_TIPO, F_CONFERMA = range(4)
+F_MESE, F_SELEZIONE = range(2)
 
 # ── LOOKUP ────────────────────────────────────────────────────────────────────
 
@@ -68,9 +73,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if user:
         await update.message.reply_text(
             f"Sei già registrato come {user['nome']} {user['cognome']} "
-            f"(gruppo {user['gruppo_turno']}).\n\n"
-            "Usa /ferie per richiedere ferie o /mie_richieste per vedere lo storico.\n"
-            "Per aggiornare la password email usa /aggiorna_password."
+            f"(gruppo {user['gruppo_turno']}).",
+            reply_markup=MENU_POMPIERE,
         )
         return ConversationHandler.END
 
@@ -146,9 +150,9 @@ async def start_ricevi_password(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.clear()
 
     await update.message.reply_text(
-        f"Registrazione completata, *{nome}*.\n\n"
-        "Usa /ferie per richiedere ferie.",
+        f"Registrazione completata, *{nome}*.",
         parse_mode="Markdown",
+        reply_markup=MENU_POMPIERE,
     )
     return ConversationHandler.END
 
@@ -161,7 +165,7 @@ async def start_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 def build_start_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler("start", start), MessageHandler(filters.Regex("^/start$"), start)],
         states={
             S_EMAIL:    [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_email)],
             S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_password)],
@@ -226,7 +230,10 @@ async def aggiorna_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def build_aggiorna_password_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("aggiorna_password", aggiorna_password_start)],
+        entry_points=[
+            CommandHandler("aggiorna_password", aggiorna_password_start),
+            MessageHandler(filters.Regex("^🔑 Aggiorna password$"), aggiorna_password_start),
+        ],
         states={
             S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiorna_password_ricevi)],
         },
@@ -237,8 +244,27 @@ def build_aggiorna_password_handler() -> ConversationHandler:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /ferie — wizard a step
+# /ferie — selezione multipla
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _build_selezione_kbd(
+    disponibili: list[tuple[date, str]],
+    selezionati: set[str],
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for d, t in disponibili:
+        key = f"{d.isoformat()}:{t}"
+        prefisso = "✅ " if key in selezionati else ""
+        label = f"{prefisso}{'🌅' if t == 'D' else '🌙'} {d.strftime('%d/%m')}"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"d:{key}"))
+    rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
+    n = len(selezionati)
+    rows.append([InlineKeyboardButton(
+        f"Conferma ({n})" if n else "Conferma",
+        callback_data="fc",
+    )])
+    return InlineKeyboardMarkup(rows)
+
 
 async def ferie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await _get_registered_user(update)
@@ -252,12 +278,12 @@ async def ferie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     context.user_data["ferie"] = {
-        "user_id":  user["id"],
-        "gruppo":   user["gruppo_turno"],
-        "email":    user["email"],
-        "password": decrypt(user["email_password_enc"]),
-        "nome":     user["nome"],
-        "cognome":  user["cognome"],
+        "user_id":       user["id"],
+        "gruppo":        user["gruppo_turno"],
+        "email":         user["email"],
+        "password":      decrypt(user["email_password_enc"]),
+        "nome":          user["nome"],
+        "cognome":       user["cognome"],
         "distaccamento": user["distaccamento"],
     }
 
@@ -299,127 +325,91 @@ async def ferie_scegli_mese(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return ConversationHandler.END
 
-    w["anno"] = anno
-    w["mese"] = mese
+    w["anno"]        = anno
+    w["mese"]        = mese
+    w["disponibili"] = disponibili
+    w["selezionati"] = set()
 
-    buttons = [
-        InlineKeyboardButton(
-            f"{'🌅' if t == 'D' else '🌙'} {d.strftime('%d/%m')}",
-            callback_data=f"d:{d.isoformat()}:{t}",
-        )
-        for d, t in disponibili
-    ]
-    rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
-
+    kbd = _build_selezione_kbd(disponibili, set())
     await query.edit_message_text(
         f"Turni disponibili — {MESI_IT[mese]} {anno}\n"
         "🌅 Diurno   🌙 Notturno\n\n"
-        "Seleziona una data:",
-        reply_markup=InlineKeyboardMarkup(rows),
+        "Tocca per selezionare, poi premi Conferma:",
+        reply_markup=kbd,
     )
-    return F_DATA
+    return F_SELEZIONE
 
 
-async def ferie_scegli_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def ferie_toggle_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
 
-    _, data_iso, tipo_cal = query.data.split(":")
-    w = context.user_data["ferie"]
-    w["data"]     = data_iso
-    w["tipo_cal"] = tipo_cal
+    key = query.data[2:]  # rimuove "d:"
+    w   = context.user_data["ferie"]
 
-    d = date.fromisoformat(data_iso)
-
-    if tipo_cal == "D":
-        buttons = [[
-            InlineKeyboardButton("🌅 Solo Diurno",      callback_data="t:D"),
-            InlineKeyboardButton("🌅🌙 Entrambi (D+N)", callback_data="t:DN"),
-        ]]
+    if key in w["selezionati"]:
+        w["selezionati"].discard(key)
     else:
-        buttons = [[InlineKeyboardButton("🌙 Solo Notturno", callback_data="t:N")]]
+        w["selezionati"].add(key)
 
-    await query.edit_message_text(
-        f"Data: *{d.strftime('%d/%m/%Y')}*\n\nChe turno vuoi richiedere?",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
-    return F_TIPO
-
-
-async def ferie_scegli_tipo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    tipo = query.data.split(":")[1]
-    w    = context.user_data["ferie"]
-    w["tipo"] = tipo
-
-    d      = date.fromisoformat(w["data"])
-    turni  = 2 if tipo == "DN" else 1
-    d_fine = d.replace(day=d.day + 1) if tipo == "DN" else d
-
-    testo = (
-        f"*Riepilogo richiesta*\n\n"
-        f"Data: {d.strftime('%d/%m/%Y')}"
-        + (f" → {d_fine.strftime('%d/%m/%Y')}" if tipo == "DN" else "")
-        + f"\nTurno: {TIPO_LABEL[tipo]}\n"
-        f"N° turni: {turni}\n\n"
-        "Confermi?"
-    )
-
-    kbd = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Conferma", callback_data="fc"),
-        InlineKeyboardButton("❌ Annulla",  callback_data="fa"),
-    ]])
-    await query.edit_message_text(testo, parse_mode="Markdown", reply_markup=kbd)
-    return F_CONFERMA
+    kbd = _build_selezione_kbd(w["disponibili"], w["selezionati"])
+    n   = len(w["selezionati"])
+    await query.edit_message_reply_markup(reply_markup=kbd)
+    await query.answer(f"{n} turni selezionati" if n else "Deselezionato")
+    return F_SELEZIONE
 
 
 async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
 
-    if query.data == "fa":
-        context.user_data.pop("ferie", None)
-        await query.edit_message_text("Richiesta annullata.")
+    w           = context.user_data.pop("ferie", {})
+    selezionati = w.get("selezionati", set())
+
+    if not selezionati:
+        await query.edit_message_text("Nessun turno selezionato. Usa /ferie per riprovare.")
         return ConversationHandler.END
 
-    w        = context.user_data.pop("ferie", {})
-    user_id  = w["user_id"]
-    data_iso = w["data"]
-    tipo     = w["tipo"]
+    ids = []
+    for key in sorted(selezionati):
+        data_iso, tipo = key.rsplit(":", 1)
+        request_id = db.insert_request(w["user_id"], data_iso, tipo)
+        ids.append((request_id, data_iso, tipo))
 
-    request_id = db.insert_request(user_id, data_iso, tipo)
-
+    elenco = "\n".join(
+        f"• #{rid} {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
+        for rid, d, t in ids
+    )
     await query.edit_message_text(
-        f"Richiesta *#{request_id}* inviata.\n"
+        f"*{len(ids)} richieste inviate:*\n{elenco}\n\n"
         "Riceverai risposta via email dal capoturno.",
         parse_mode="Markdown",
     )
 
-    ok = email_service.send_ferie_request(
-        pompiere_email=w["email"],
-        pompiere_password=w["password"],
-        pompiere_nome=w["nome"],
-        pompiere_cognome=w["cognome"],
-        distaccamento=w["distaccamento"],
-        gruppo=w["gruppo"],
-        request_id=request_id,
-        data_iso=data_iso,
-        tipo=tipo,
-    )
+    errori = []
+    for request_id, data_iso, tipo in ids:
+        ok = email_service.send_ferie_request(
+            pompiere_email=w["email"],
+            pompiere_password=w["password"],
+            pompiere_nome=w["nome"],
+            pompiere_cognome=w["cognome"],
+            distaccamento=w["distaccamento"],
+            gruppo=w["gruppo"],
+            request_id=request_id,
+            data_iso=data_iso,
+            tipo=tipo,
+        )
+        if not ok:
+            errori.append(request_id)
 
-    if not ok:
+    if errori:
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="⚠️ Richiesta registrata ma l'email non è stata inviata.\n"
+            text=f"⚠️ Email non inviate per le richieste: {errori}.\n"
                  "Controlla la password con /aggiorna_password.",
         )
 
-    # Notifica informativa al capoturno su Telegram (senza bottoni)
-    await _notifica_capoturno_telegram(context, request_id, w)
-
+    await _notifica_capoturno_telegram(context, ids, w)
     return ConversationHandler.END
 
 
@@ -431,12 +421,16 @@ async def ferie_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 def build_ferie_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("ferie", ferie)],
+        entry_points=[
+            CommandHandler("ferie", ferie),
+            MessageHandler(filters.Regex("^📅 Richiedi ferie$"), ferie),
+        ],
         states={
-            F_MESE:     [CallbackQueryHandler(ferie_scegli_mese, pattern=r"^m:")],
-            F_DATA:     [CallbackQueryHandler(ferie_scegli_data, pattern=r"^d:")],
-            F_TIPO:     [CallbackQueryHandler(ferie_scegli_tipo, pattern=r"^t:")],
-            F_CONFERMA: [CallbackQueryHandler(ferie_conferma,    pattern=r"^f[ca]$")],
+            F_MESE:      [CallbackQueryHandler(ferie_scegli_mese, pattern=r"^m:")],
+            F_SELEZIONE: [
+                CallbackQueryHandler(ferie_toggle_data, pattern=r"^d:"),
+                CallbackQueryHandler(ferie_conferma,    pattern=r"^fc$"),
+            ],
         },
         fallbacks=[CommandHandler("cancel", ferie_cancel)],
         name="ferie_conv",
@@ -480,15 +474,17 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def _notifica_capoturno_telegram(
     context: ContextTypes.DEFAULT_TYPE,
-    request_id: int,
+    ids: list[tuple[int, str, str]],
     w: dict,
 ) -> None:
-    d = date.fromisoformat(w["data"])
+    elenco = "\n".join(
+        f"  • #{rid} {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
+        for rid, d, t in ids
+    )
     testo = (
-        f"📋 Nuova richiesta ferie *#{request_id}*\n\n"
-        f"Vigile: {w['nome']} {w['cognome']}\n"
-        f"Gruppo: {w['gruppo']} — {w['distaccamento']}\n"
-        f"Data: {d.strftime('%d/%m/%Y')} — {TIPO_LABEL[w['tipo']]}\n\n"
+        f"📋 Nuove richieste ferie — {w['nome']} {w['cognome']}\n"
+        f"Gruppo: {w['gruppo']} — {w['distaccamento']}\n\n"
+        f"{elenco}\n\n"
         f"_Rispondi via email a {w['email']}_"
     )
     try:
@@ -498,4 +494,4 @@ async def _notifica_capoturno_telegram(
             parse_mode="Markdown",
         )
     except Exception as e:
-        logger.error("Errore notifica Telegram capoturno per richiesta #%d: %s", request_id, e)
+        logger.error("Errore notifica Telegram capoturno: %s", e)
