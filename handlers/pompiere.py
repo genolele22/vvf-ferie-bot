@@ -21,6 +21,7 @@ import email_service
 import sheets_service
 from config import TELEGRAM_CAPOTURNO_ID
 from crypto import decrypt, encrypt
+from handlers.capoturno import MENU_CAPOTURNO
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,14 @@ async def _get_registered_user(update: Update) -> db.sqlite3.Row | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Capoturno: menu dedicato, salta registrazione
+    if update.effective_user.id == TELEGRAM_CAPOTURNO_ID:
+        await update.message.reply_text(
+            "Menu capoturno.",
+            reply_markup=MENU_CAPOTURNO,
+        )
+        return ConversationHandler.END
+
     user = db.find_user_by_telegram_id(update.effective_user.id)
     if user:
         await update.message.reply_text(
