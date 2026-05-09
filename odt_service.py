@@ -92,11 +92,25 @@ def _trova_indici_sezioni(rows: list) -> tuple[int, int, int]:
     return pa_idx, ferie_col_header_idx, missione_idx
 
 
-def _rimuovi_nome_da_mezzi(rows: list, pa_idx: int, cognome: str, num: int | None) -> str:
+def _rimuovi_nome_da_mezzi(rows: list, pa_idx: int, odt_label: str) -> str:
     """
-    Cerca 'Grado Cognome [num]' nelle righe SOPRA pa_idx.
-    Svuota la cella e restituisce l'etichetta completa trovata (es. 'Vp Genovesi').
+    Cerca la label esatta (es. 'Vp Genovesi') nelle righe SOPRA pa_idx.
+    Svuota la cella e restituisce la label.
+    Come fallback usa il regex su cognome.
     """
+    # Ricerca esatta della label (es. "Vp Genovesi")
+    for row in rows[:pa_idx]:
+        for cell in row.iter(CELL):
+            txt = _cell_text(cell)
+            if odt_label in txt:
+                _clear_cell(cell)
+                logger.info("Rimosso '%s' dalla cella mezzo", odt_label)
+                return odt_label
+
+    # Fallback: regex su cognome (per utenti senza odt_label nel DB)
+    parts = odt_label.split()
+    cognome = parts[1] if len(parts) >= 2 else odt_label
+    num = parts[2] if len(parts) >= 3 and parts[2].isdigit() else None
     pattern = re.compile(
         rf"({GRADI})\s+{re.escape(cognome)}(?:\s+{num})?" if num
         else rf"({GRADI})\s+{re.escape(cognome)}(?:\s+\d+)?",
@@ -108,15 +122,11 @@ def _rimuovi_nome_da_mezzi(rows: list, pa_idx: int, cognome: str, num: int | Non
             m = pattern.search(txt)
             if m:
                 _clear_cell(cell)
-                # Ricostruisci etichetta: grado + cognome (+ num se c'è)
-                grado = m.group(1)
-                label = f"{grado} {cognome}"
-                if num:
-                    label += f" {num}"
-                logger.info("Rimosso '%s' dalla cella mezzo", label)
-                return label
-    logger.warning("Nome non trovato nei mezzi: %s", cognome)
-    return cognome
+                logger.info("Rimosso '%s' (fallback regex) dalla cella mezzo", odt_label)
+                return odt_label
+
+    logger.warning("Nome non trovato nei mezzi: %s", odt_label)
+    return odt_label
 
 
 def _inserisci_in_ferie(rows: list, ferie_start: int, missione_idx: int,
@@ -181,7 +191,9 @@ def genera_foglio(data_iso: str) -> bytes | None:
     data_fmt = d.strftime("%d/%m/%Y")
 
     for r in ferie:
-        label = _rimuovi_nome_da_mezzi(rows, pa_idx, r["cognome"], r["numero_vvf"])
+        # Usa odt_label dal DB se disponibile, altrimenti ricostruisci da cognome
+        odt_label = r["odt_label"] if r["odt_label"] else r["cognome"]
+        label = _rimuovi_nome_da_mezzi(rows, pa_idx, odt_label)
         _inserisci_in_ferie(rows, ferie_data_start, missione_idx, label, r["tipo_turno"], data_fmt)
 
     # Serializza e reimpacchetta

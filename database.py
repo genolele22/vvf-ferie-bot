@@ -30,7 +30,8 @@ def init_db():
                 gruppo_turno        TEXT NOT NULL CHECK(gruppo_turno IN ('B1','B2','B3','B4','B5','B6','B7','B8')),
                 ruolo               TEXT NOT NULL CHECK(ruolo IN ('pompiere','capoturno')),
                 numero_vvf          INTEGER,
-                email_password_enc  TEXT
+                email_password_enc  TEXT,
+                odt_label           TEXT
             );
 
             CREATE TABLE IF NOT EXISTS salto (
@@ -181,11 +182,16 @@ def get_pending_requests_by_month(anno_mese: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def set_odt_label(user_id: int, odt_label: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET odt_label=? WHERE id=?", (odt_label, user_id))
+
+
 def get_requests_by_date(data_iso: str) -> list[sqlite3.Row]:
     """Tutte le richieste (qualsiasi stato) per una data specifica."""
     with get_conn() as conn:
         return conn.execute(
-            """SELECT r.*, u.nome, u.cognome, u.distaccamento, u.gruppo_turno, u.numero_vvf
+            """SELECT r.*, u.nome, u.cognome, u.distaccamento, u.gruppo_turno, u.numero_vvf, u.odt_label
                FROM requests r JOIN users u ON r.user_id = u.id
                WHERE r.data_richiesta = ?
                ORDER BY u.cognome""",
