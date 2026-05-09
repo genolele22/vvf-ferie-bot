@@ -5,7 +5,7 @@ Se le credenziali non sono configurate, le operazioni falliscono silenziosamente
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 import gspread
 from google.oauth2.credentials import Credentials
@@ -59,7 +59,6 @@ def _get_sheet() -> gspread.Worksheet | None:
             spreadsheet = gc.open(SHEET_NAME)
         except gspread.SpreadsheetNotFound:
             spreadsheet = gc.create(SHEET_NAME)
-            spreadsheet.share(None, perm_type="anyone", role="reader")
             logger.info("Spreadsheet '%s' creato: %s", SHEET_NAME, spreadsheet.url)
 
         ws = spreadsheet.sheet1
@@ -85,7 +84,6 @@ def registra_richiesta(
     if ws is None:
         return False
     try:
-        from datetime import date
         data_fmt = date.fromisoformat(data_iso).strftime("%d/%m/%Y")
         ts = datetime.utcnow().strftime("%d/%m/%Y %H:%M")
         ws.append_row([request_id, nome, cognome, gruppo, distaccamento, data_fmt, tipo_turno, ts])

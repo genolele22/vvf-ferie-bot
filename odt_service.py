@@ -82,13 +82,12 @@ def _trova_indici_sezioni(rows: list) -> tuple[int, int, int]:
         t = _row_text(row)
         if "PERSONALE ASSENTE" in t and pa_idx == -1:
             pa_idx = i
-        if "FERIE" in t and "RIPOSO COMPENSATIVO" in t and pa_idx != -1:
-            pass  # riga header sezioni — il col header è la successiva
-        if "Cognome" in t and "Turni" in t and "Da" in t and pa_idx != -1:
-            ferie_col_header_idx = i
-        if "MISSIONE" in t and pa_idx != -1:
-            missione_idx = i
-            break
+        elif pa_idx != -1:
+            if "Cognome" in t and "Turni" in t and "Da" in t:
+                ferie_col_header_idx = i
+            elif "MISSIONE" in t:
+                missione_idx = i
+                break
     return pa_idx, ferie_col_header_idx, missione_idx
 
 
@@ -174,11 +173,14 @@ def genera_foglio(data_iso: str) -> bytes | None:
     if not ferie:
         return odt_path.read_bytes()     # nessuna feria, template invariato
 
-    # Leggi il .odt (zip)
+    # Leggi il .odt (zip) preservando ordine e tipo compressione di ogni entry
     with zipfile.ZipFile(odt_path, "r") as zin:
-        xml_bytes   = zin.read("content.xml")
-        altri_files = {n: zin.read(n) for n in zin.namelist() if n != "content.xml"}
+        entries = [
+            (info, zin.read(info.filename))
+            for info in zin.infolist()
+        ]
 
+    xml_bytes = next(data for info, data in entries if info.filename == "content.xml")
     root = etree.fromstring(xml_bytes)
     rows = root.findall(f".//{ROW}")
 
@@ -191,18 +193,17 @@ def genera_foglio(data_iso: str) -> bytes | None:
     data_fmt = d.strftime("%d/%m/%Y")
 
     for r in ferie:
-        # Usa odt_label dal DB se disponibile, altrimenti ricostruisci da cognome
         odt_label = r["odt_label"] if r["odt_label"] else r["cognome"]
         label = _rimuovi_nome_da_mezzi(rows, pa_idx, odt_label)
         _inserisci_in_ferie(rows, ferie_data_start, missione_idx, label, r["tipo_turno"], data_fmt)
 
-    # Serializza e reimpacchetta
     xml_out = etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=False)
 
+    # Reimpacchetta: mimetype DEVE essere primo e STORED (standard ODF)
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
-        for name, data in altri_files.items():
-            zout.writestr(name, data)
-        zout.writestr("content.xml", xml_out)
-    buf.seek(0)
-    return buf.read()
+    with zipfile.ZipFile(buf, "w") as zout:
+        for info, data in entries:
+            if info.filename == "content.xml":
+                data = xml_out
+            zout.writestr(info, data)  # info preserva compress_type originale
+    return buf.getvalue()

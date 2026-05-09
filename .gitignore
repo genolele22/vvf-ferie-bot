@@ -4,5 +4,5 @@ __pycache__/
 *.db
 .env
 data/calendario.json
-*.json filter=*.json
-"json google.json"
+json google.json
+*.credentials.json

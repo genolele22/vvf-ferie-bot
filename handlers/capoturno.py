@@ -4,7 +4,7 @@ La risposta alle richieste avviene via email (Rispondi direttamente al messaggio
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
@@ -105,11 +105,14 @@ async def genera_foglio_start(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def genera_foglio_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     testo = update.message.text.strip()
-    try:
-        d = date.fromisoformat(
-            "-".join(reversed(testo.split("/")))
-        )
-    except ValueError:
+    d = None
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(testo, fmt).date()
+            break
+        except ValueError:
+            continue
+    if d is None:
         await update.message.reply_text("Formato non valido. Usa GG/MM/AAAA:")
         return GF_DATA
 
