@@ -258,8 +258,8 @@ def insert_request(user_id: int, data_richiesta: str, tipo_turno: str) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO bot_requests (vigile_id, data_richiesta, tipo_turno)
-                VALUES (%s, %s, %s)
+                INSERT INTO bot_requests (vigile_id, data_richiesta, tipo_turno, stato, processed_at)
+                VALUES (%s, %s, %s, 'approved', NOW())
             """, (user_id, data_richiesta, tipo_turno))
             request_id = cur.lastrowid
             tipi = ["D", "N"] if tipo_turno == "DN" else [tipo_turno]
