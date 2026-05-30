@@ -476,9 +476,9 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     bottoni_annulla = []
     for r in richieste:
         d        = date.fromisoformat(r["data_richiesta"])
-        emoji    = _stato_emoji(r["stato"])
         tipo_str = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
-        riga     = f"{emoji} *#{r['id']}* {d.strftime('%d/%m/%Y')} — {tipo_str}"
+        prefix   = "❌ " if r["stato"] == "rejected" else ""
+        riga     = f"{prefix}{d.strftime('%d/%m/%Y')} — {tipo_str}"
         if r["stato"] == "rejected" and r["note_rifiuto"]:
             riga += f"\n   ↳ _{r['note_rifiuto']}_"
         righe.append(riga)

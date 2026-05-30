@@ -20,7 +20,7 @@ from handlers.pompiere import (
     build_start_handler,
     mie_richieste,
 )
-from handlers.fureria import pending, pending_data, build_agenda_handler
+from handlers.fureria import build_agenda_handler
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -108,9 +108,6 @@ def main() -> None:
 
     # ── Fureria ───────────────────────────────────────────────────────────────
     app.add_handler(build_agenda_handler())
-    app.add_handler(CommandHandler("pending",      pending))
-    app.add_handler(CommandHandler("pending_data", pending_data))
-    app.add_handler(MessageHandler(filters.Regex("^📋 Richieste in attesa$"), pending))
 
     logger.info("Bot avviato.")
     app.run_polling(drop_pending_updates=True)

@@ -1,5 +1,5 @@
 """
-Handlers per la fureria: /pending, /pending_data, genera_foglio.
+Handlers per la fureria: agenda CSV ferie, richiesta ferie propria.
 La risposta alle richieste avviene via email (Rispondi direttamente al messaggio ricevuto).
 """
 
@@ -19,18 +19,11 @@ logger = logging.getLogger(__name__)
 
 MENU_FURERIA = ReplyKeyboardMarkup(
     [
-        ["📋 Richieste in attesa"],
         ["📅 Richiedi ferie", "📋 Le mie richieste"],
         ["🔑 Aggiorna password"],
     ],
     resize_keyboard=True,
 )
-
-TIPO_LABEL = {
-    "D":  "Diurno ☀️",
-    "N":  "Notturno 🌙",
-    "DN": "Diurno + Notturno 🌅🌙",
-}
 
 AGE_PERIODO = 0
 
@@ -40,59 +33,6 @@ async def _check_fureria(update: Update) -> bool:
         await update.message.reply_text("Comando riservato alla fureria.")
         return False
     return True
-
-
-def _format_request(r) -> str:
-    d = date.fromisoformat(r["data_richiesta"])
-    return (
-        f"*#{r['id']}* — {r['nome']} {r['cognome']} "
-        f"({r['distaccamento']}, {r['gruppo_turno']})\n"
-        f"Data: {d.strftime('%d/%m/%Y')} | {TIPO_LABEL.get(r['tipo_turno'], r['tipo_turno'])}\n"
-        f"_Rispondi via email_"
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# /pending — tutte le richieste in attesa
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _check_fureria(update):
-        return
-
-    richieste = db.get_pending_requests()
-    if not richieste:
-        await update.message.reply_text("Nessuna richiesta in attesa.", reply_markup=MENU_FURERIA)
-        return
-
-    for i, r in enumerate(richieste):
-        kbd = MENU_FURERIA if i == len(richieste) - 1 else None
-        await update.message.reply_text(_format_request(r), parse_mode="Markdown", reply_markup=kbd)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# /pending_data [YYYY-MM] — richieste in attesa per mese
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def pending_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _check_fureria(update):
-        return
-
-    if context.args:
-        anno_mese = context.args[0]
-    else:
-        oggi = date.today()
-        anno_mese = f"{oggi.year:04d}-{oggi.month:02d}"
-
-    richieste = db.get_pending_requests_by_month(anno_mese)
-    if not richieste:
-        await update.message.reply_text(f"Nessuna richiesta in attesa per {anno_mese}.", reply_markup=MENU_FURERIA)
-        return
-
-    for i, r in enumerate(richieste):
-        kbd = MENU_FURERIA if i == len(richieste) - 1 else None
-        await update.message.reply_text(_format_request(r), parse_mode="Markdown", reply_markup=kbd)
-
 
 
 
