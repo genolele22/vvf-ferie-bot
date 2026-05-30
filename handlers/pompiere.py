@@ -19,9 +19,9 @@ import calendar_turni as cal
 import database as db
 import email_service
 import sheets_service
-from config import TELEGRAM_CAPOTURNO_ID
+from config import TELEGRAM_FURERIA_IDS
 from crypto import decrypt, encrypt
-from handlers.capoturno import MENU_CAPOTURNO
+from handlers.fureria import MENU_FURERIA
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ MESI_IT = {
 }
 
 TIPO_LABEL = {
-    "D":  "Diurno 🌅",
+    "D":  "Diurno ☀️",
     "N":  "Notturno 🌙",
     "DN": "Diurno + Notturno 🌅🌙",
 }
@@ -57,7 +57,7 @@ def _stato_emoji(stato: str) -> str:
     return {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(stato, "?")
 
 
-async def _get_registered_user(update: Update) -> db.sqlite3.Row | None:
+async def _get_registered_user(update: Update) -> dict | None:
     user = db.find_user_by_telegram_id(update.effective_user.id)
     if not user:
         await update.message.reply_text(
@@ -71,22 +71,20 @@ async def _get_registered_user(update: Update) -> db.sqlite3.Row | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Capoturno: menu dedicato, salta registrazione
-    if update.effective_user.id == TELEGRAM_CAPOTURNO_ID:
-        await update.message.reply_text(
-            "Menu capoturno.",
-            reply_markup=MENU_CAPOTURNO,
-        )
-        return ConversationHandler.END
-
+    is_fureria = update.effective_user.id in TELEGRAM_FURERIA_IDS
     user = db.find_user_by_telegram_id(update.effective_user.id)
+
     if user:
+        menu = MENU_FURERIA if is_fureria else MENU_POMPIERE
         await update.message.reply_text(
             f"Sei già registrato come {user['nome']} {user['cognome']} "
             f"(gruppo {user['gruppo_turno']}).",
-            reply_markup=MENU_POMPIERE,
+            reply_markup=menu,
         )
         return ConversationHandler.END
+
+    if is_fureria:
+        context.user_data["is_fureria"] = True
 
     await update.message.reply_text(
         "Benvenuto nel sistema ferie — Comando VVF Genova.\n\n"
@@ -157,12 +155,14 @@ async def start_ricevi_password(update: Update, context: ContextTypes.DEFAULT_TY
 
     db.set_telegram_id(user_id, update.effective_user.id)
     db.set_email_password(user_id, encrypt(password))
+    is_fureria = context.user_data.get("is_fureria", False)
     context.user_data.clear()
 
+    menu = MENU_FURERIA if is_fureria else MENU_POMPIERE
     await update.message.reply_text(
         f"Registrazione completata, *{nome}*.",
         parse_mode="Markdown",
-        reply_markup=MENU_POMPIERE,
+        reply_markup=menu,
     )
     return ConversationHandler.END
 
@@ -264,8 +264,10 @@ def _build_selezione_kbd(
     buttons = []
     for d, t in disponibili:
         key = f"{d.isoformat()}:{t}"
+        turno = cal.get_turno(d)
+        gruppo_rc = turno["gruppo"] if turno else ""
         prefisso = "✅ " if key in selezionati else ""
-        label = f"{prefisso}{'🌅' if t == 'D' else '🌙'} {d.strftime('%d/%m')}"
+        label = f"{prefisso}{'☀️' if t == 'D' else '🌙'} {d.strftime('%d/%m')} {gruppo_rc}"
         buttons.append(InlineKeyboardButton(label, callback_data=f"d:{key}"))
     rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
     n = len(selezionati)
@@ -326,7 +328,10 @@ async def ferie_scegli_mese(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     tutte       = cal.date_per_mese(gruppo, anno, mese)
     salti       = db.get_salti_utente(user_id)
-    disponibili = [(d, t) for d, t in tutte if (d.isoformat(), t) not in salti]
+    ferie_già   = db.get_ferie_utente(user_id)
+    esclusi     = salti | ferie_già
+    oggi        = date.today()
+    disponibili = [(d, t) for d, t in tutte if (d.isoformat(), t) not in esclusi and d > oggi]
 
     if not disponibili:
         await query.edit_message_text(
@@ -343,7 +348,7 @@ async def ferie_scegli_mese(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     kbd = _build_selezione_kbd(disponibili, set())
     await query.edit_message_text(
         f"Turni disponibili — {MESI_IT[mese]} {anno}\n"
-        "🌅 Diurno   🌙 Notturno\n\n"
+        "☀️ Diurno   🌙 Notturno\n\n"
         "Tocca per selezionare, poi premi Conferma:",
         reply_markup=kbd,
     )
@@ -392,46 +397,39 @@ async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
     await query.edit_message_text(
         f"*{len(ids)} richieste inviate:*\n{elenco}\n\n"
-        "Riceverai risposta via email dal capoturno.",
+        "Riceverai risposta via email dalla fureria.",
         parse_mode="Markdown",
     )
 
     # Registra su Google Sheets (fail silenzioso)
-    for request_id, data_iso, tipo in ids:
-        sheets_service.registra_richiesta(
-            request_id=request_id,
+    if ids:
+        d0 = date.fromisoformat(ids[0][1])
+        sheets_service.aggiorna_mese(
+            user_id=w["user_id"],
             nome=w["nome"],
             cognome=w["cognome"],
             gruppo=w["gruppo"],
             distaccamento=w["distaccamento"],
-            data_iso=data_iso,
-            tipo_turno=tipo,
+            anno=d0.year,
+            mese=d0.month,
         )
 
-    errori = []
-    for request_id, data_iso, tipo in ids:
-        ok = email_service.send_ferie_request(
-            pompiere_email=w["email"],
-            pompiere_password=w["password"],
-            pompiere_nome=w["nome"],
-            pompiere_cognome=w["cognome"],
-            distaccamento=w["distaccamento"],
-            gruppo=w["gruppo"],
-            request_id=request_id,
-            data_iso=data_iso,
-            tipo=tipo,
-        )
-        if not ok:
-            errori.append(request_id)
-
-    if errori:
+    ok = email_service.send_ferie_requests(
+        pompiere_email=w["email"],
+        pompiere_password=w["password"],
+        pompiere_nome=w["nome"],
+        pompiere_cognome=w["cognome"],
+        distaccamento=w["distaccamento"],
+        gruppo=w["gruppo"],
+        richieste=ids,
+    )
+    if not ok:
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"⚠️ Email non inviate per le richieste: {errori}.\n"
-                 "Controlla la password con /aggiorna_password.",
+            text="⚠️ Email non inviata. Controlla la password con /aggiorna_password.",
         )
 
-    await _notifica_capoturno_telegram(context, ids, w)
+    await _notifica_fureria_telegram(context, ids, w)
     return ConversationHandler.END
 
 
@@ -475,6 +473,7 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     righe = []
+    bottoni_annulla = []
     for r in richieste:
         d        = date.fromisoformat(r["data_richiesta"])
         emoji    = _stato_emoji(r["stato"])
@@ -483,18 +482,92 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if r["stato"] == "rejected" and r["note_rifiuto"]:
             riga += f"\n   ↳ _{r['note_rifiuto']}_"
         righe.append(riga)
+        if r["stato"] == "pending":
+            bottoni_annulla.append([InlineKeyboardButton(
+                f"❌ Annulla #{r['id']} ({d.strftime('%d/%m')})",
+                callback_data=f"annulla:{r['id']}",
+            )])
 
+    kbd = InlineKeyboardMarkup(bottoni_annulla) if bottoni_annulla else None
     await update.message.reply_text(
         "Le tue richieste:\n\n" + "\n".join(righe),
         parse_mode="Markdown",
+        reply_markup=kbd,
     )
 
 
+async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user  = db.find_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await query.answer("Utente non trovato.", show_alert=True)
+        return
+
+    request_id = int(query.data.split(":")[1])
+
+    # Recupera i dati prima di cancellare
+    richiesta = db.get_request(request_id)
+
+    cancellata = db.delete_request(request_id, user["id"])
+
+    if cancellata:
+        await query.edit_message_text(f"Richiesta #{request_id} annullata.")
+        if richiesta:
+            d_ann = date.fromisoformat(richiesta["data_richiesta"])
+            sheets_service.aggiorna_mese(
+                user_id=user["id"],
+                nome=user["nome"],
+                cognome=user["cognome"],
+                gruppo=user["gruppo_turno"],
+                distaccamento=user["distaccamento"],
+                anno=d_ann.year,
+                mese=d_ann.month,
+            )
+        if richiesta and user["email_password_enc"]:
+            await _invia_notifica_annullamento(context, user, richiesta)
+    else:
+        await query.answer("Richiesta non trovata o già processata.", show_alert=True)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# NOTIFICA TELEGRAM CAPOTURNO (solo informativa, risposta via email)
+# NOTIFICHE FURERIA
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _notifica_capoturno_telegram(
+async def _invia_notifica_annullamento(
+    context: ContextTypes.DEFAULT_TYPE,
+    user: dict,
+    richiesta,
+) -> None:
+    """Email + Telegram alla fureria per annullamento richiesta."""
+    password = decrypt(user["email_password_enc"])
+
+    email_service.send_cancellation_email(
+        pompiere_email=user["email"],
+        pompiere_password=password,
+        pompiere_nome=user["nome"],
+        pompiere_cognome=user["cognome"],
+        distaccamento=user["distaccamento"],
+        gruppo=user["gruppo_turno"],
+        request_id=richiesta["id"],
+        data_iso=richiesta["data_richiesta"],
+        tipo=richiesta["tipo_turno"],
+    )
+
+    data_str = date.fromisoformat(richiesta["data_richiesta"]).strftime("%d/%m/%Y")
+    tipo_str = TIPO_LABEL.get(richiesta["tipo_turno"], richiesta["tipo_turno"])
+    testo = (
+        f"❌ Annullamento ferie — {user['nome']} {user['cognome']}\n"
+        f"Gruppo: {user['gruppo_turno']} — {user['distaccamento']}\n\n"
+        f"  • #{richiesta['id']} {data_str} {tipo_str}"
+    )
+    for chat_id in TELEGRAM_FURERIA_IDS:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=testo)
+        except Exception as e:
+            logger.error("Errore notifica Telegram annullamento a %s: %s", chat_id, e)
+
+
+async def _notifica_fureria_telegram(
     context: ContextTypes.DEFAULT_TYPE,
     ids: list[tuple[int, str, str]],
     w: dict,
@@ -509,11 +582,12 @@ async def _notifica_capoturno_telegram(
         f"{elenco}\n\n"
         f"_Rispondi via email a {w['email']}_"
     )
-    try:
-        await context.bot.send_message(
-            chat_id=TELEGRAM_CAPOTURNO_ID,
-            text=testo,
-            parse_mode="Markdown",
-        )
-    except Exception as e:
-        logger.error("Errore notifica Telegram capoturno: %s", e)
+    for chat_id in TELEGRAM_FURERIA_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=testo,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error("Errore notifica Telegram fureria %s: %s", chat_id, e)

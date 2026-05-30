@@ -25,7 +25,7 @@ import database as db
 CSV_DEFAULT = Path(__file__).parent.parent / "data" / "utenti.csv"
 
 GRUPPI_VALIDI = {"B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"}
-RUOLI_VALIDI  = {"pompiere", "capoturno"}
+RUOLI_VALIDI  = {"pompiere", "fureria"}
 
 
 def parse_args():

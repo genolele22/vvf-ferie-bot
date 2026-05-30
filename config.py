@@ -4,14 +4,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CAPOTURNO_ID = int(os.environ["TELEGRAM_CAPOTURNO_ID"])
+# Comma-separated list of Telegram user IDs with fureria access, e.g. "997982711,123456789"
+TELEGRAM_FURERIA_IDS: list[int] = [
+    int(x.strip()) for x in os.environ["TELEGRAM_FURERIA_IDS"].split(",")
+]
 
 SMTP_HOST = os.environ["SMTP_HOST"]
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
-CAPOTURNO_EMAIL = os.environ["CAPOTURNO_EMAIL"]
+FURERIA_EMAIL = os.environ["FURERIA_EMAIL"]
 ENCRYPTION_KEY = os.environ["ENCRYPTION_KEY"]
 
-DATABASE_PATH  = os.environ.get("DATABASE_PATH",  os.path.join(os.path.dirname(__file__), "vvf_ferie.db"))
+MYSQL_HOST     = os.environ.get("MYSQL_HOST",     "127.0.0.1")
+MYSQL_PORT     = int(os.environ.get("MYSQL_PORT",    "3306"))
+MYSQL_USER     = os.environ.get("MYSQL_USER",     "root")
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "vvf_turno_b")
+
 CALENDARIO_PATH = os.environ.get("CALENDARIO_PATH", os.path.join(os.path.dirname(__file__), "data", "calendario.json"))
 ODT_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "data", "templates")
 

@@ -6,3 +6,9 @@ __pycache__/
 data/calendario.json
 json google.json
 *.credentials.json
+
+# Junk / file spuri
+*.png
+*.bak
+content%3A*
+*.zip

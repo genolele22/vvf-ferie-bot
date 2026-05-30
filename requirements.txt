@@ -6,3 +6,4 @@ odfpy
 gspread
 google-auth
 google-auth-oauthlib
+PyMySQL==1.1.1
