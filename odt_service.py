@@ -21,12 +21,21 @@ from config import ODT_TEMPLATES_DIR
 logger = logging.getLogger(__name__)
 
 # Namespace ODT
-TBL  = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
-TXT  = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+TBL    = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+TXT    = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+STY    = "urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+FO     = "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+OFFICE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
 CELL = f"{{{TBL}}}table-cell"
 COV  = f"{{{TBL}}}covered-table-cell"
 ROW  = f"{{{TBL}}}table-row"
 P    = f"{{{TXT}}}p"
+
+# ── layout pagina (A4 portrait, margini 1cm → area utile 27.7cm) ────────────────
+PAGE_USABLE_CM = 27.7     # 29.7 - 1 - 1
+SAFETY_CM      = 0.7      # margine di sicurezza sotto il limite pagina
+TARGET_CM      = PAGE_USABLE_CM - SAFETY_CM   # 27.0 → tetto per ciascun blocco
+DEFAULT_ROW_CM = 0.621    # altezza riga di riferimento del template
 
 GRADI = r"(?:Cs|Vp|Cr|Cf|Asp|Dc|Isp)"
 
@@ -177,6 +186,77 @@ def _inserisci_in_ferie(rows: list, ferie_start: int, missione_idx: int,
     logger.warning("Nessuna riga FERIE libera per %s", label)
 
 
+# ── layout: imponi altezze e taglio a due pagine ────────────────────────────────
+
+def _parse_cm(val: str | None) -> float | None:
+    if val and val.endswith("cm"):
+        try:
+            return float(val[:-2])
+        except ValueError:
+            return None
+    return None
+
+
+def _altezze_dichiarate(root) -> dict[str, float]:
+    """Mappa style-name (table-row) → altezza in cm dichiarata nel template."""
+    out: dict[str, float] = {}
+    for st in root.iter(f"{{{STY}}}style"):
+        if st.get(f"{{{STY}}}family") != "table-row":
+            continue
+        rp = st.find(f"{{{STY}}}table-row-properties")
+        if rp is None:
+            continue
+        h = _parse_cm(rp.get(f"{{{STY}}}row-height"))
+        if h is not None:
+            out[st.get(f"{{{STY}}}name")] = h
+    return out
+
+
+def _imposta_due_pagine(root, rows: list, pa_idx: int):
+    """
+    Forza il foglio su due pagine esatte:
+    - blocco 1 (righe 0..pa_idx-1)  → pagina 1
+    - blocco 2 (righe pa_idx..fine) → pagina 2 (page-break su PERSONALE ASSENTE)
+    Impone a ogni riga un'altezza esplicita (use-optimal-row-height=false) ricalcolata
+    così che ciascun blocco rientri in TARGET_CM. Senza questo LibreOffice gonfia le
+    righe al contenuto e il foglio sfora su 3+ pagine.
+    """
+    autostyles = root.find(f"{{{OFFICE}}}automatic-styles")
+    if autostyles is None:
+        logger.error("automatic-styles non trovato: impossibile imporre le altezze")
+        return
+
+    dichiarate = _altezze_dichiarate(root)
+    base = [
+        dichiarate.get(r.get(f"{{{TBL}}}style-name"), DEFAULT_ROW_CM)
+        for r in rows
+    ]
+
+    # fattore di compressione per blocco: comprime solo se il blocco sfora TARGET_CM
+    sum1 = sum(base[:pa_idx]) or 1.0
+    sum2 = sum(base[pa_idx:]) or 1.0
+    factor1 = min(1.0, TARGET_CM / sum1)
+    factor2 = min(1.0, TARGET_CM / sum2)
+    logger.info(
+        "Altezze ODT: blocco1=%.2fcm (x%.3f), blocco2=%.2fcm (x%.3f)",
+        sum1, factor1, sum2, factor2,
+    )
+
+    for i, row in enumerate(rows):
+        factor = factor1 if i < pa_idx else factor2
+        new_h = round(base[i] * factor, 3)
+        style = etree.SubElement(autostyles, f"{{{STY}}}style")
+        style.set(f"{{{STY}}}name", f"GenRow{i}")
+        style.set(f"{{{STY}}}family", "table-row")
+        props = etree.SubElement(style, f"{{{STY}}}table-row-properties")
+        props.set(f"{{{STY}}}row-height", f"{new_h}cm")
+        props.set(f"{{{STY}}}use-optimal-row-height", "false")
+        props.set(f"{{{FO}}}keep-together", "always")
+        if i == pa_idx:
+            props.set(f"{{{FO}}}break-before", "page")
+        row.set(f"{{{TBL}}}style-name", f"GenRow{i}")
+
+
 # ── entry point pubblico ──────────────────────────────────────────────────────
 
 def genera_foglio(data_iso: str) -> bytes | None:
@@ -197,8 +277,6 @@ def genera_foglio(data_iso: str) -> bytes | None:
         return None
 
     ferie = db.get_ferianti_per_giorno(data_iso)
-    if not ferie:
-        return odt_path.read_bytes()     # nessuna feria, template invariato
 
     # Leggi il .odt (zip) preservando ordine e tipo compressione di ogni entry
     with zipfile.ZipFile(odt_path, "r") as zin:
@@ -219,7 +297,7 @@ def genera_foglio(data_iso: str) -> bytes | None:
     furieri_idx = _trova_furieri_names_idx(rows)
     ferie_data_start = col_header_idx + 1
 
-    for r in ferie:
+    for r in (ferie or []):
         if r["odt_label"]:
             odt_label = r["odt_label"]
         else:
@@ -232,6 +310,9 @@ def genera_foglio(data_iso: str) -> bytes | None:
         da_giorno = str(date.fromisoformat(r["da"]).day)
         a_giorno  = str(date.fromisoformat(r["a"]).day)
         _inserisci_in_ferie(rows, ferie_data_start, missione_idx, ferie_label, sigla, r["turni"], da_giorno, a_giorno)
+
+    # Sempre: imponi le altezze e taglia su due pagine (anche senza ferie)
+    _imposta_due_pagine(root, rows, pa_idx)
 
     xml_out = etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=False)
 
