@@ -32,10 +32,12 @@ ROW  = f"{{{TBL}}}table-row"
 P    = f"{{{TXT}}}p"
 
 # ── layout pagina (A4 portrait, margini 1cm → area utile 27.7cm) ────────────────
-PAGE_USABLE_CM = 27.7     # 29.7 - 1 - 1
-SAFETY_CM      = 0.7      # margine di sicurezza sotto il limite pagina
-TARGET_CM      = PAGE_USABLE_CM - SAFETY_CM   # 27.0 → tetto per ciascun blocco
-DEFAULT_ROW_CM = 0.621    # altezza riga di riferimento del template
+PAGE_USABLE_CM    = 27.7     # 29.7 - 1 - 1
+SAFETY_CM         = 0.7      # margine di sicurezza sotto il limite pagina
+TARGET_CM         = PAGE_USABLE_CM - SAFETY_CM   # 27.0 → tetto per ciascun blocco
+DEFAULT_ROW_CM    = 0.621    # altezza riga di riferimento del template
+VIGILE_ROW_CM     = 0.5      # altezza imposta alle righe dati (vigili)
+STRUCT_THRESH_CM  = 0.7      # righe più alte di così = strutturali (altezza preservata)
 
 GRADI = r"(?:Cs|Vp|Cr|Cf|Asp|Dc|Isp)"
 
@@ -227,12 +229,13 @@ def _imposta_due_pagine(root, rows: list, pa_idx: int):
         return
 
     dichiarate = _altezze_dichiarate(root)
-    base = [
-        dichiarate.get(r.get(f"{{{TBL}}}style-name"), DEFAULT_ROW_CM)
-        for r in rows
-    ]
+    # righe dati (vigili) → altezza fissa bassa; righe strutturali (intestazione) → invariate
+    base = []
+    for r in rows:
+        h = dichiarate.get(r.get(f"{{{TBL}}}style-name"), DEFAULT_ROW_CM)
+        base.append(h if h > STRUCT_THRESH_CM else VIGILE_ROW_CM)
 
-    # fattore di compressione per blocco: comprime solo se il blocco sfora TARGET_CM
+    # fattore di compressione per blocco: comprime ancora solo se un blocco sfora TARGET_CM
     sum1 = sum(base[:pa_idx]) or 1.0
     sum2 = sum(base[pa_idx:]) or 1.0
     factor1 = min(1.0, TARGET_CM / sum1)
