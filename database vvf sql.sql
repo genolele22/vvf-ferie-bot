@@ -502,6 +502,7 @@ CREATE TABLE `vigili` (
   `cognome` varchar(60) NOT NULL,
   `nome` varchar(60) DEFAULT NULL,
   `disambiguatore` smallint(5) UNSIGNED DEFAULT NULL,
+  `email` varchar(120) DEFAULT NULL,
   `qualifica_id` tinyint(3) UNSIGNED NOT NULL,
   `sede_id` tinyint(3) UNSIGNED NOT NULL,
   `salto_id` tinyint(3) UNSIGNED NOT NULL,
