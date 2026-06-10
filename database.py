@@ -63,7 +63,7 @@ def _fixall(rows: list) -> list:
 
 _VIGILE = """
     SELECT v.id, v.nome, v.cognome, v.telegram_id, v.email, v.telefono,
-           v.email_password_enc, v.odt_label,
+           v.email_password_enc, v.odt_label, v.salto_id,
            v.disambiguatore AS numero_vvf,
            v.ruolo,
            se.nome  AS distaccamento,
