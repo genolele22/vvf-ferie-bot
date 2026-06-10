@@ -39,6 +39,11 @@ DEFAULT_ROW_CM    = 0.621    # altezza riga di riferimento del template
 VIGILE_ROW_CM     = 0.5      # altezza imposta alle righe dati (vigili)
 STRUCT_THRESH_CM  = 0.7      # righe più alte di così = strutturali (altezza preservata)
 
+# ── colori patente (nome ODT colorato) ──────────────────────────────────────────
+SPAN          = f"{{{TXT}}}span"
+COLORI_HEX    = {"rosso": "#C00000", "blu": "#0000C0"}
+COLORE_STILE  = {"rosso": "ColRosso", "blu": "ColBlu"}
+
 GRADI = r"(?:Cs|Vp|Cr|Cf|Asp|Dc|Isp)"
 
 DIST_SIGLA: dict[str, str] = {
@@ -260,6 +265,52 @@ def _imposta_due_pagine(root, rows: list, pa_idx: int):
         row.set(f"{{{TBL}}}style-name", f"GenRow{i}")
 
 
+# ── colori patente ──────────────────────────────────────────────────────────
+
+def _aggiungi_stili_colore(root) -> None:
+    """Aggiunge gli stili-testo ColRosso/ColBlu in automatic-styles (idempotente)."""
+    autostyles = root.find(f"{{{OFFICE}}}automatic-styles")
+    if autostyles is None:
+        logger.warning("automatic-styles non trovato: niente stili colore")
+        return
+    esistenti = {s.get(f"{{{STY}}}name") for s in autostyles.findall(f"{{{STY}}}style")}
+    for colore, nome in COLORE_STILE.items():
+        if nome in esistenti:
+            continue
+        st = etree.SubElement(autostyles, f"{{{STY}}}style")
+        st.set(f"{{{STY}}}name", nome)
+        st.set(f"{{{STY}}}family", "text")
+        tp = etree.SubElement(st, f"{{{STY}}}text-properties")
+        tp.set(f"{{{FO}}}color", COLORI_HEX[colore])
+
+
+def _colora_cella(cell, stile: str) -> None:
+    """Avvolge il testo dei <text:p> della cella in uno span con lo stile colore."""
+    for p in cell.iter(P):
+        if p.text and p.text.strip():
+            span = etree.Element(SPAN)
+            span.set(f"{{{TXT}}}style-name", stile)
+            span.text = p.text
+            p.text = None
+            p.insert(0, span)
+
+
+def _applica_colori(rows: list, pa_idx: int, mappa: dict[str, str]) -> int:
+    """Colora le celle-nome (righe sopra PERSONALE ASSENTE) che combaciano con un odt_label."""
+    if not mappa:
+        return 0
+    n = 0
+    for row in rows[:pa_idx]:
+        for cell in row.iter(CELL):
+            label = " ".join(_cell_text(cell).split()).upper()
+            colore = mappa.get(label)
+            if not colore:
+                continue
+            _colora_cella(cell, COLORE_STILE[colore])
+            n += 1
+    return n
+
+
 # ── entry point pubblico ──────────────────────────────────────────────────────
 
 def genera_foglio(data_iso: str) -> bytes | None:
@@ -313,6 +364,11 @@ def genera_foglio(data_iso: str) -> bytes | None:
         da_giorno = str(date.fromisoformat(r["da"]).day)
         a_giorno  = str(date.fromisoformat(r["a"]).day)
         _inserisci_in_ferie(rows, ferie_data_start, missione_idx, ferie_label, sigla, r["turni"], da_giorno, a_giorno)
+
+    # Colora i nomi per grado di patente (3°/4° rosso, 2° blu)
+    _aggiungi_stili_colore(root)
+    n_col = _applica_colori(rows, pa_idx, db.colori_patente())
+    logger.info("Colorati %d nomi per patente", n_col)
 
     # Sempre: imponi le altezze e taglia su due pagine (anche senza ferie)
     _imposta_due_pagine(root, rows, pa_idx)

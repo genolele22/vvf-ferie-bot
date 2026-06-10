@@ -723,3 +723,35 @@ def _patch_foglio_esistente(cur, data_iso: str, tipo: str, out_id: int, in_id: i
             "VALUES (%s, %s, %s, 0)",
             (sid, fid, in_id),
         )
+
+
+# ── colori patente (per l'ODT) ──────────────────────────────────────────────────
+
+def colori_patente() -> dict[str, str]:
+    """
+    Mappa odt_label (UPPER, spazi singoli) → "rosso" | "blu" secondo la patente:
+      - 3° o 4° grado → rosso
+      - 2° grado      → blu
+    Vigili con solo 1° grado o senza patente non compaiono (colore default).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT v.odt_label,
+                       MAX(CASE WHEN p.tipo IN ('3','4') THEN 2
+                                WHEN p.tipo = '2'        THEN 1
+                                ELSE 0 END) AS prio
+                FROM vigili v
+                JOIN vigili_patenti vp ON vp.vigile_id = v.id
+                JOIN patenti p         ON p.id = vp.patente_id
+                WHERE v.attivo = 1 AND v.odt_label IS NOT NULL AND v.odt_label <> ''
+                GROUP BY v.id, v.odt_label
+            """)
+            out: dict[str, str] = {}
+            for r in cur.fetchall():
+                prio = r["prio"]
+                if not prio:
+                    continue
+                label = " ".join(r["odt_label"].split()).upper()
+                out[label] = "rosso" if prio == 2 else "blu"
+            return out
