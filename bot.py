@@ -21,6 +21,7 @@ from handlers.pompiere import (
     mie_richieste,
 )
 from handlers.fureria import build_agenda_handler
+from handlers.scambio import build_scambio_handlers
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -108,6 +109,10 @@ def main() -> None:
 
     # ── Fureria ───────────────────────────────────────────────────────────────
     app.add_handler(build_agenda_handler())
+
+    # ── Scambio salto turno ─────────────────────────────────────────────────────
+    for h in build_scambio_handlers():
+        app.add_handler(h)
 
     logger.info("Bot avviato.")
     app.run_polling(drop_pending_updates=True)
