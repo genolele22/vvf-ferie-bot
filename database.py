@@ -63,7 +63,7 @@ def _fixall(rows: list) -> list:
 
 _VIGILE = """
     SELECT v.id, v.nome, v.cognome, v.telegram_id, v.email, v.telefono,
-           v.email_password_enc, v.odt_label,
+           v.email_password_enc, v.odt_label, v.salto_id,
            v.disambiguatore AS numero_vvf,
            v.ruolo,
            se.nome  AS distaccamento,
@@ -102,6 +102,67 @@ def init_db():
                     PRIMARY KEY (id),
                     UNIQUE KEY uq_salto (vigile_id, data, tipo),
                     CONSTRAINT bot_salto_ibfk_1 FOREIGN KEY (vigile_id) REFERENCES vigili (id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            # Coda notifiche: il gestionale enfila eventi (es. ferie approvata alla
+            # generazione ODT), il bot li invia in polling (Telegram + mail). id MAX+1.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_outbox (
+                    id          INT UNSIGNED NOT NULL,
+                    vigile_id   INT UNSIGNED NOT NULL,
+                    tipo        VARCHAR(30) NOT NULL,
+                    data        DATE DEFAULT NULL,
+                    tipo_turno  VARCHAR(2) DEFAULT NULL,
+                    stato       ENUM('pending','sent','error') NOT NULL DEFAULT 'pending',
+                    tentativi   INT NOT NULL DEFAULT 0,
+                    ctx         VARCHAR(80) DEFAULT NULL,
+                    errore      VARCHAR(255) DEFAULT NULL,
+                    creato_il   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    inviato_il  DATETIME DEFAULT NULL,
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uq_ctx (ctx),
+                    KEY idx_stato (stato)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            # Workflow + audit dello scambio salto turno. id esplicito (TiDB: no AUTO_INCREMENT).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_scambi_salto (
+                    id            INT UNSIGNED NOT NULL,
+                    vigile_a_id   INT UNSIGNED NOT NULL,
+                    vigile_b_id   INT UNSIGNED NOT NULL,
+                    slot_a        TINYINT UNSIGNED NOT NULL,
+                    slot_b        TINYINT UNSIGNED NOT NULL,
+                    blocco_inizio DATE NOT NULL,
+                    blocco_fine   DATE NOT NULL,
+                    stato         ENUM('proposto','confermato','approvato','rifiutato','annullato')
+                                    NOT NULL DEFAULT 'proposto',
+                    creato_da     INT UNSIGNED NOT NULL,
+                    approvato_da  INT UNSIGNED DEFAULT NULL,
+                    creato_il     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    modificato_il DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (id),
+                    KEY fk_ss_a (vigile_a_id),
+                    KEY fk_ss_b (vigile_b_id),
+                    CONSTRAINT bot_scambi_salto_ibfk_1 FOREIGN KEY (vigile_a_id) REFERENCES vigili (id),
+                    CONSTRAINT bot_scambi_salto_ibfk_2 FOREIGN KEY (vigile_b_id) REFERENCES vigili (id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            # Read-model letto dal PHP (prepopolaFoglio): delta per-foglio dello scambio approvato.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS salto_override (
+                    id            INT UNSIGNED NOT NULL,
+                    scambio_id    INT UNSIGNED NOT NULL,
+                    data          DATE NOT NULL,
+                    tipo          ENUM('D','N') NOT NULL,
+                    vigile_out_id INT UNSIGNED NOT NULL,
+                    vigile_in_id  INT UNSIGNED NOT NULL,
+                    attivo        TINYINT(1) NOT NULL DEFAULT 1,
+                    PRIMARY KEY (id),
+                    KEY idx_override_lookup (data, tipo, attivo),
+                    KEY fk_so_scambio (scambio_id),
+                    CONSTRAINT salto_override_ibfk_1 FOREIGN KEY (scambio_id) REFERENCES bot_scambi_salto (id),
+                    CONSTRAINT salto_override_ibfk_2 FOREIGN KEY (vigile_out_id) REFERENCES vigili (id),
+                    CONSTRAINT salto_override_ibfk_3 FOREIGN KEY (vigile_in_id) REFERENCES vigili (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """)
 
@@ -257,9 +318,11 @@ def _delete_assenza(cur, vigile_id: int, data_iso: str, tipo_turno: str):
 def insert_request(user_id: int, data_richiesta: str, tipo_turno: str) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Nasce PENDING: l'approvazione avviene alla generazione dell'ODT (servizio
+            # completo), che notifica il vigile via Telegram+mail (vedi bot_outbox).
             cur.execute("""
                 INSERT INTO bot_requests (vigile_id, data_richiesta, tipo_turno, stato, processed_at)
-                VALUES (%s, %s, %s, 'approved', NOW())
+                VALUES (%s, %s, %s, 'pending', NULL)
             """, (user_id, data_richiesta, tipo_turno))
             request_id = cur.lastrowid
             tipi = ["D", "N"] if tipo_turno == "DN" else [tipo_turno]
@@ -274,6 +337,63 @@ def get_request(request_id: int) -> Optional[dict]:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM bot_requests WHERE id = %s", (request_id,))
             return _fix(cur.fetchone())
+
+
+# ── Outbox (coda notifiche dal gestionale) ──────────────────────────────────────
+
+def outbox_fetch_pending(limit: int = 20) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM bot_outbox WHERE stato='pending' AND tentativi < 5 "
+                "ORDER BY id LIMIT %s", (limit,)
+            )
+            return [r for r in cur.fetchall()]
+
+
+def outbox_mark_sent(row_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bot_outbox SET stato='sent', inviato_il=NOW() WHERE id=%s", (row_id,))
+
+
+def outbox_mark_error(row_id: int, msg: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE bot_outbox SET tentativi=tentativi+1, errore=%s, "
+                "stato=IF(tentativi+1>=5,'error','pending') WHERE id=%s",
+                (msg[:255], row_id),
+            )
+
+
+def get_vigile_contacts(vigile_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, nome, cognome, telegram_id, email FROM vigili WHERE id=%s",
+                (vigile_id,),
+            )
+            return _fix(cur.fetchone())
+
+
+def get_fureria_credentials() -> Optional[tuple[str, str]]:
+    """Email + password (decifrata) dell'account fureria, per inviare le conferme."""
+    from config import FURERIA_EMAIL
+    import crypto
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, email_password_enc FROM vigili WHERE email=%s AND email_password_enc IS NOT NULL",
+                (FURERIA_EMAIL,),
+            )
+            row = cur.fetchone()
+    if not row or not row.get("email_password_enc"):
+        return None
+    try:
+        return (row["email"], crypto.decrypt(row["email_password_enc"]))
+    except Exception:
+        return None
 
 
 def get_requests_by_user(user_id: int) -> list[dict]:
@@ -533,3 +653,184 @@ def is_salto(user_id: int, data: str, tipo: str) -> bool:
                 (user_id, data, tipo),
             )
             return cur.fetchone() is not None
+
+
+# ── scambio salto turno ─────────────────────────────────────────────────────────
+
+def _next_id(cur, table: str) -> int:
+    """Prossimo id esplicito (TiDB non ha AUTO_INCREMENT affidabile)."""
+    cur.execute(f"SELECT COALESCE(MAX(id),0)+1 AS n FROM {table}")
+    return cur.fetchone()["n"]
+
+
+def vigili_turno_b_registrati() -> list[dict]:
+    """Vigili attivi registrati su Telegram (possono confermare uno scambio)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT v.id, v.nome, v.cognome, v.salto_id, v.telegram_id,
+                       v.email, v.email_password_enc, v.odt_label, v.ruolo,
+                       st.codice AS gruppo_turno
+                FROM vigili v
+                JOIN salti_turno st ON st.id = v.salto_id
+                WHERE v.attivo = 1 AND v.telegram_id IS NOT NULL
+                ORDER BY v.salto_id, v.cognome
+            """)
+            return _fixall(cur.fetchall())
+
+
+_SCAMBIO_SEL = """
+    SELECT s.*,
+           a.nome AS a_nome, a.cognome AS a_cognome, a.telegram_id AS a_tg,
+           a.email AS a_email,
+           b.nome AS b_nome, b.cognome AS b_cognome, b.telegram_id AS b_tg,
+           b.email AS b_email
+    FROM bot_scambi_salto s
+    JOIN vigili a ON a.id = s.vigile_a_id
+    JOIN vigili b ON b.id = s.vigile_b_id
+"""
+
+
+def get_scambio(scambio_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_SCAMBIO_SEL + " WHERE s.id = %s", (scambio_id,))
+            return _fix(cur.fetchone())
+
+
+def scambi_per_stato(stato: str) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_SCAMBIO_SEL + " WHERE s.stato = %s ORDER BY s.creato_il", (stato,))
+            return _fixall(cur.fetchall())
+
+
+def crea_scambio(vigile_a_id: int, vigile_b_id: int, slot_a: int, slot_b: int,
+                 blocco_inizio: str, blocco_fine: str, creato_da: int) -> int:
+    """Crea una proposta di scambio (stato='proposto'). Ritorna l'id."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            sid = _next_id(cur, "bot_scambi_salto")
+            cur.execute("""
+                INSERT INTO bot_scambi_salto
+                    (id, vigile_a_id, vigile_b_id, slot_a, slot_b,
+                     blocco_inizio, blocco_fine, stato, creato_da)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'proposto', %s)
+            """, (sid, vigile_a_id, vigile_b_id, slot_a, slot_b,
+                  blocco_inizio, blocco_fine, creato_da))
+            return sid
+
+
+def _set_stato_scambio(scambio_id: int, stato: str, approvato_da: int | None = None):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if approvato_da is not None:
+                cur.execute(
+                    "UPDATE bot_scambi_salto SET stato=%s, approvato_da=%s WHERE id=%s",
+                    (stato, approvato_da, scambio_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE bot_scambi_salto SET stato=%s WHERE id=%s",
+                    (stato, scambio_id),
+                )
+
+
+def conferma_scambio(scambio_id: int):
+    _set_stato_scambio(scambio_id, "confermato")
+
+
+def rifiuta_scambio(scambio_id: int):
+    _set_stato_scambio(scambio_id, "rifiutato")
+
+
+def annulla_scambio(scambio_id: int):
+    _set_stato_scambio(scambio_id, "annullato")
+
+
+def approva_scambio(scambio_id: int, approvato_da: int,
+                    override_rows: list[tuple[str, str, int, int]]):
+    """
+    Approva lo scambio in transazione unica:
+      - stato='approvato'
+      - scrive salto_override (delta per-foglio)
+      - se i fogli interessati esistono già, applica subito lo scambio su
+        salto_servizio / assegnazioni (i fogli futuri li sistema prepopolaFoglio).
+    override_rows: lista di (data_iso, tipo, vigile_out_id, vigile_in_id).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE bot_scambi_salto SET stato='approvato', approvato_da=%s WHERE id=%s",
+                (approvato_da, scambio_id),
+            )
+            for data_iso, tipo, out_id, in_id in override_rows:
+                oid = _next_id(cur, "salto_override")
+                cur.execute("""
+                    INSERT INTO salto_override
+                        (id, scambio_id, data, tipo, vigile_out_id, vigile_in_id, attivo)
+                    VALUES (%s, %s, %s, %s, %s, %s, 1)
+                """, (oid, scambio_id, data_iso, tipo, out_id, in_id))
+                _patch_foglio_esistente(cur, data_iso, tipo, out_id, in_id)
+
+
+def _patch_foglio_esistente(cur, data_iso: str, tipo: str, out_id: int, in_id: int):
+    """Se il foglio (data,tipo) esiste già, scambia out↔in su salto/assegnazioni."""
+    cur.execute(
+        "SELECT id FROM fogli_servizio WHERE data_servizio=%s AND tipo_turno=%s",
+        (data_iso, tipo),
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+    fid = row["id"]
+    # out: torna a lavorare → esce dal salto (finisce nei disponibili)
+    cur.execute(
+        "DELETE FROM salto_servizio WHERE foglio_id=%s AND vigile_id=%s", (fid, out_id)
+    )
+    # in: va a riposo → esce dalle assegnazioni ed entra nel salto
+    cur.execute(
+        "DELETE FROM assegnazioni WHERE foglio_id=%s AND vigile_id=%s", (fid, in_id)
+    )
+    cur.execute(
+        "SELECT 1 FROM salto_servizio WHERE foglio_id=%s AND vigile_id=%s", (fid, in_id)
+    )
+    if cur.fetchone() is None:
+        sid = _next_id(cur, "salto_servizio")
+        cur.execute(
+            "INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) "
+            "VALUES (%s, %s, %s, 0)",
+            (sid, fid, in_id),
+        )
+
+
+# ── colori patente (per l'ODT) ──────────────────────────────────────────────────
+
+def colori_patente() -> dict[str, str]:
+    """
+    Mappa odt_label (UPPER, spazi singoli) → "rosso" | "blu" secondo la patente:
+      - 3° o 4° grado → rosso
+      - 2° grado      → blu
+    Vigili con solo 1° grado o senza patente non compaiono (colore default).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT v.odt_label,
+                       MAX(CASE WHEN p.tipo IN ('3','4') THEN 2
+                                WHEN p.tipo = '2'        THEN 1
+                                ELSE 0 END) AS prio
+                FROM vigili v
+                JOIN vigili_patenti vp ON vp.vigile_id = v.id
+                JOIN patenti p         ON p.id = vp.patente_id
+                WHERE v.attivo = 1 AND v.odt_label IS NOT NULL AND v.odt_label <> ''
+                GROUP BY v.id, v.odt_label
+            """)
+            out: dict[str, str] = {}
+            for r in cur.fetchall():
+                prio = r["prio"]
+                if not prio:
+                    continue
+                label = " ".join(r["odt_label"].split()).upper()
+                out[label] = "rosso" if prio == 2 else "blu"
+            return out

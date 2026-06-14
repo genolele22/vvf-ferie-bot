@@ -26,7 +26,8 @@ from handlers.fureria import MENU_FURERIA
 logger = logging.getLogger(__name__)
 
 MENU_POMPIERE = ReplyKeyboardMarkup(
-    [["📅 Richiedi ferie", "📋 Le mie richieste"], ["🔑 Aggiorna password"]],
+    [["📅 Richiedi ferie", "📋 Le mie richieste"],
+     ["🔄 Scambia salto", "🔑 Aggiorna password"]],
     resize_keyboard=True,
 )
 

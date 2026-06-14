@@ -6,12 +6,11 @@ import logging
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
 
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 import database as db
-import odt_service
+import outbox_drain
 from config import TELEGRAM_BOT_TOKEN
 from handlers.pompiere import (
     annulla_richiesta_callback,
@@ -21,6 +20,7 @@ from handlers.pompiere import (
     mie_richieste,
 )
 from handlers.fureria import build_agenda_handler
+from handlers.scambio import build_scambio_handlers
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,46 +29,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ── HTTP server interno per generazione ODT ───────────────────────────────────
+# ── HTTP server minimale: solo health-check per Fly (GET /) ────────────────────
+# La generazione ODT è stata spostata nel gestionale (FoglioRenderer, dal DB).
 
-class OdtHandler(BaseHTTPRequestHandler):
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        parsed = urlparse(self.path)
-
-        if parsed.path == "/":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"ok")
-            return
-
-        if parsed.path != "/odt":
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        params   = parse_qs(parsed.query)
-        data_iso = params.get("data", [None])[0]
-        if not data_iso:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b"Missing ?data=YYYY-MM-DD")
-            return
-
-        odt_bytes = odt_service.genera_foglio(data_iso)
-        if odt_bytes is None:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"No ODT for this date")
-            return
-
-        filename = f"servizio_{data_iso.replace('-', '')}.odt"
         self.send_response(200)
-        self.send_header("Content-Type", "application/vnd.oasis.opendocument.text")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Content-Length", str(len(odt_bytes)))
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(odt_bytes)
+        self.wfile.write(b"ok")
 
     def log_message(self, *args):
         pass  # silenzio nei log
@@ -83,8 +52,8 @@ class _DualStackServer(HTTPServer):
 
 
 def _start_http_server():
-    server = _DualStackServer(("::", 8080), OdtHandler)
-    logger.info("HTTP ODT server in ascolto su :8080 (dual-stack)")
+    server = _DualStackServer(("::", 8080), HealthHandler)
+    logger.info("HTTP health server in ascolto su :8080 (dual-stack)")
     server.serve_forever()
 
 
@@ -95,6 +64,7 @@ def main() -> None:
     logger.info("Database inizializzato.")
 
     threading.Thread(target=_start_http_server, daemon=True).start()
+    outbox_drain.start()   # coda notifiche dal gestionale (ferie approvate, ecc.)
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -108,6 +78,10 @@ def main() -> None:
 
     # ── Fureria ───────────────────────────────────────────────────────────────
     app.add_handler(build_agenda_handler())
+
+    # ── Scambio salto turno ─────────────────────────────────────────────────────
+    for h in build_scambio_handlers():
+        app.add_handler(h)
 
     logger.info("Bot avviato.")
     app.run_polling(drop_pending_updates=True)

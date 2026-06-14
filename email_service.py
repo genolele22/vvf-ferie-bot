@@ -89,6 +89,87 @@ def send_ferie_requests(
         return False
 
 
+def send_scambio_conferma(
+    fureria_email: str,
+    fureria_password: str,
+    a_nome: str, a_cognome: str, a_email: str,
+    b_nome: str, b_cognome: str, b_email: str,
+    a_riposa: tuple[str, str],   # (data_D_iso, data_N_iso) che ora riposa A (= riposo orig. di B)
+    b_riposa: tuple[str, str],   # (data_D_iso, data_N_iso) che ora riposa B (= riposo orig. di A)
+) -> bool:
+    """
+    Conferma ai due vigili che lo scambio salto turno è stato approvato dalla fureria.
+    Inviata dall'account della fureria che approva, a entrambi i vigili.
+    """
+    def _gg(par: tuple[str, str]) -> str:
+        d, n = par
+        return (f"{date.fromisoformat(d).strftime('%d/%m/%Y')} (diurno) + "
+                f"{date.fromisoformat(n).strftime('%d/%m/%Y')} (notturno)")
+
+    a_full = f"{a_nome} {a_cognome}".strip()
+    b_full = f"{b_nome} {b_cognome}".strip()
+    destinatari = [e for e in (a_email, b_email) if e]
+    if not destinatari:
+        logger.warning("Scambio: nessuna email destinatario (%s / %s)", a_full, b_full)
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = fureria_email
+    msg["To"] = ", ".join(destinatari)
+    msg["Subject"] = f"[Scambio salto turno] Approvato — {a_full} ⇄ {b_full}"
+    msg.set_content(
+        f"Lo scambio del salto turno è stato approvato dalla fureria.\n\n"
+        f"  • {a_full} ora riposa: {_gg(a_riposa)}\n"
+        f"  • {b_full} ora riposa: {_gg(b_riposa)}\n\n"
+        f"Le date originali dei due salti sono state scambiate.\n"
+        f"Questa mail è la conferma ufficiale per entrambi.\n"
+    )
+
+    try:
+        with _smtp_connect(fureria_email, fureria_password) as smtp:
+            smtp.send_message(msg)
+        logger.info("Email scambio inviata a %s", destinatari)
+        return True
+    except Exception as e:
+        logger.error("Errore invio email scambio %s ⇄ %s: %s", a_full, b_full, e)
+        return False
+
+
+def send_ferie_conferma(
+    fureria_email: str,
+    fureria_password: str,
+    vigile_email: str,
+    vigile_nome: str,
+    vigile_cognome: str,
+    data_iso: str,
+    tipo: str,
+) -> bool:
+    """Conferma al vigile che le sue ferie sono approvate (servizio generato)."""
+    if not vigile_email:
+        return False
+    data_str = date.fromisoformat(data_iso).strftime("%d/%m/%Y")
+    tipo_str = TIPO_LABEL.get(tipo, tipo)
+    msg = EmailMessage()
+    msg["From"] = fureria_email
+    msg["To"] = vigile_email
+    msg["Subject"] = f"[Ferie approvate] {data_str} {tipo_str}"
+    msg.set_content(
+        f"Gentile {vigile_nome} {vigile_cognome},\n\n"
+        f"le tue ferie sono state APPROVATE:\n"
+        f"  • {data_str}  {tipo_str}\n\n"
+        f"Il foglio di servizio è stato generato.\n"
+        f"Questa è la conferma ufficiale.\n"
+    )
+    try:
+        with _smtp_connect(fureria_email, fureria_password) as smtp:
+            smtp.send_message(msg)
+        logger.info("Email conferma ferie inviata a %s (%s %s)", vigile_email, data_str, tipo)
+        return True
+    except Exception as e:
+        logger.error("Errore invio conferma ferie a %s: %s", vigile_email, e)
+        return False
+
+
 def send_cancellation_email(
     pompiere_email: str,
     pompiere_password: str,

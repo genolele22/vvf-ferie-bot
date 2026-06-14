@@ -61,3 +61,61 @@ def date_per_mese(gruppo: str, anno: int, mese: int) -> list[tuple[date, str]]:
 def gruppo_in_servizio(d: date) -> dict | None:
     """Restituisce {"tipo", "gruppo"} per la data, o None se nessun gruppo B è in turno."""
     return _get_cal().get(d.isoformat())
+
+
+# ── blocchi ciclici B1→B8 (scambio salto turno) ─────────────────────────────────
+#
+# Ogni slot di riposo (B1..B8) compare nel calendario come un giorno D + il giorno N
+# successivo. In ordine di data gli slot scorrono ...B8,B1,B2,...,B8,B1... : un "blocco"
+# è il giro completo B1→B8 (B8 = fine giro). Lo scambio è ammesso solo in avanti, dentro
+# lo stesso blocco, fino a B8.
+
+def _slot_num(gruppo: str) -> int:
+    return int(gruppo[1:])
+
+
+def _occorrenze() -> list[tuple[int, date, date]]:
+    """Lista (slot, data_D, data_N) ordinata per data_D. data_N = data_D + 1 giorno."""
+    cal = _get_cal()
+    occ = [
+        (_slot_num(v["gruppo"]), date.fromisoformat(k), date.fromisoformat(k) + timedelta(days=1))
+        for k, v in cal.items()
+        if v["tipo"] == "D"
+    ]
+    return sorted(occ, key=lambda x: x[1])
+
+
+def blocco_corrente(d: date) -> tuple[date, date]:
+    """
+    Confini del blocco B1→B8 che contiene la data d:
+    (data_D di B1, data_N di B8). Il blocco "possiede" tutte le date dal suo B1
+    fino al B1 successivo (escluso).
+    """
+    occ = _occorrenze()
+    starts = [o for o in occ if o[0] == 1]
+    inizio = starts[0]
+    for o in starts:
+        if o[1] <= d:
+            inizio = o
+        else:
+            break
+    fine = next((o for o in occ if o[0] == 8 and o[1] >= inizio[1]), inizio)
+    return inizio[1], fine[2]
+
+
+def slot_dates_in_blocco(slot: int, blocco: tuple[date, date]) -> tuple[date, date] | None:
+    """(data_D, data_N) dello slot dentro il blocco, o None se non presente."""
+    inizio, fine = blocco
+    for s, dd, nn in _occorrenze():
+        if s == slot and inizio <= dd <= fine:
+            return dd, nn
+    return None
+
+
+def prossimo_salto(slot: int, da: date | None = None) -> tuple[date, date] | None:
+    """Prima occorrenza (data_D, data_N) dello slot strettamente dopo `da` (default oggi)."""
+    da = da or date.today()
+    for s, dd, nn in _occorrenze():
+        if s == slot and dd > da:
+            return dd, nn
+    return None

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 MENU_FURERIA = ReplyKeyboardMarkup(
     [
         ["📅 Richiedi ferie", "📋 Le mie richieste"],
-        ["🔑 Aggiorna password"],
+        ["🔄 Scambia salto", "🔑 Aggiorna password"],
     ],
     resize_keyboard=True,
 )
