@@ -104,6 +104,26 @@ def init_db():
                     CONSTRAINT bot_salto_ibfk_1 FOREIGN KEY (vigile_id) REFERENCES vigili (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """)
+            # Coda notifiche: il gestionale enfila eventi (es. ferie approvata alla
+            # generazione ODT), il bot li invia in polling (Telegram + mail). id MAX+1.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_outbox (
+                    id          INT UNSIGNED NOT NULL,
+                    vigile_id   INT UNSIGNED NOT NULL,
+                    tipo        VARCHAR(30) NOT NULL,
+                    data        DATE DEFAULT NULL,
+                    tipo_turno  VARCHAR(2) DEFAULT NULL,
+                    stato       ENUM('pending','sent','error') NOT NULL DEFAULT 'pending',
+                    tentativi   INT NOT NULL DEFAULT 0,
+                    ctx         VARCHAR(80) DEFAULT NULL,
+                    errore      VARCHAR(255) DEFAULT NULL,
+                    creato_il   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    inviato_il  DATETIME DEFAULT NULL,
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uq_ctx (ctx),
+                    KEY idx_stato (stato)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
             # Workflow + audit dello scambio salto turno. id esplicito (TiDB: no AUTO_INCREMENT).
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_scambi_salto (
@@ -298,9 +318,11 @@ def _delete_assenza(cur, vigile_id: int, data_iso: str, tipo_turno: str):
 def insert_request(user_id: int, data_richiesta: str, tipo_turno: str) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Nasce PENDING: l'approvazione avviene alla generazione dell'ODT (servizio
+            # completo), che notifica il vigile via Telegram+mail (vedi bot_outbox).
             cur.execute("""
                 INSERT INTO bot_requests (vigile_id, data_richiesta, tipo_turno, stato, processed_at)
-                VALUES (%s, %s, %s, 'approved', NOW())
+                VALUES (%s, %s, %s, 'pending', NULL)
             """, (user_id, data_richiesta, tipo_turno))
             request_id = cur.lastrowid
             tipi = ["D", "N"] if tipo_turno == "DN" else [tipo_turno]
@@ -315,6 +337,63 @@ def get_request(request_id: int) -> Optional[dict]:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM bot_requests WHERE id = %s", (request_id,))
             return _fix(cur.fetchone())
+
+
+# ── Outbox (coda notifiche dal gestionale) ──────────────────────────────────────
+
+def outbox_fetch_pending(limit: int = 20) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM bot_outbox WHERE stato='pending' AND tentativi < 5 "
+                "ORDER BY id LIMIT %s", (limit,)
+            )
+            return [r for r in cur.fetchall()]
+
+
+def outbox_mark_sent(row_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bot_outbox SET stato='sent', inviato_il=NOW() WHERE id=%s", (row_id,))
+
+
+def outbox_mark_error(row_id: int, msg: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE bot_outbox SET tentativi=tentativi+1, errore=%s, "
+                "stato=IF(tentativi+1>=5,'error','pending') WHERE id=%s",
+                (msg[:255], row_id),
+            )
+
+
+def get_vigile_contacts(vigile_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, nome, cognome, telegram_id, email FROM vigili WHERE id=%s",
+                (vigile_id,),
+            )
+            return _fix(cur.fetchone())
+
+
+def get_fureria_credentials() -> Optional[tuple[str, str]]:
+    """Email + password (decifrata) dell'account fureria, per inviare le conferme."""
+    from config import FURERIA_EMAIL
+    import crypto
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, email_password_enc FROM vigili WHERE email=%s AND email_password_enc IS NOT NULL",
+                (FURERIA_EMAIL,),
+            )
+            row = cur.fetchone()
+    if not row or not row.get("email_password_enc"):
+        return None
+    try:
+        return (row["email"], crypto.decrypt(row["email_password_enc"]))
+    except Exception:
+        return None
 
 
 def get_requests_by_user(user_id: int) -> list[dict]:
