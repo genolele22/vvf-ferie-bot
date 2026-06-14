@@ -1,7 +1,9 @@
 # Scambio salto turno tra vigili — design
 
-> Stato: **progettato, NON implementato.** Da costruire su branch dedicato `scambio-salto`,
-> niente push/deploy finché non testato.
+> Stato: **IMPLEMENTATO** su branch `scambio-salto` (commit `a5caf78`), pushato su origin.
+> Non ancora mergiato su `main` né deployato su Fly.
+> Nodo TiDB/AUTO_INCREMENT: risolto — le tabelle nuove (`bot_scambi_salto`, `salto_override`)
+> usano id espliciti via `_next_id()` (`MAX(id)+1`), non passano da `insert_salto`/`bot_salto`.
 
 ## Cos'è il problema
 
