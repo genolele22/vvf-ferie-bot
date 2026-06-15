@@ -748,18 +748,37 @@ def annulla_scambio(scambio_id: int):
     _set_stato_scambio(scambio_id, "annullato")
 
 
+class ScambioConflitto(Exception):
+    """Uno dei due vigili è già in uno scambio attivo su quelle date."""
+
+
 def approva_scambio(scambio_id: int, approvato_da: int,
                     override_rows: list[tuple[str, str, int, int]]):
     """
     Approva lo scambio in transazione unica:
+      - guardia anti-conflitto: nessuno dei due vigili già impegnato su quelle date
       - stato='approvato'
       - scrive salto_override (delta per-foglio)
       - se i fogli interessati esistono già, applica subito lo scambio su
         salto_servizio / assegnazioni (i fogli futuri li sistema prepopolaFoglio).
     override_rows: lista di (data_iso, tipo, vigile_out_id, vigile_in_id).
+    Solleva ScambioConflitto se uno dei due è già in uno scambio attivo.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Guardia: nessuno dei due vigili è già in un override attivo su quelle date
+            for data_iso, tipo, out_id, in_id in override_rows:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM salto_override "
+                    "WHERE attivo=1 AND data=%s AND tipo=%s "
+                    "AND (vigile_in_id IN (%s,%s) OR vigile_out_id IN (%s,%s))",
+                    (data_iso, tipo, out_id, in_id, out_id, in_id),
+                )
+                if cur.fetchone()["n"] > 0:
+                    raise ScambioConflitto(
+                        "Uno dei due vigili è già in uno scambio attivo in questo blocco."
+                    )
+
             cur.execute(
                 "UPDATE bot_scambi_salto SET stato='approvato', approvato_da=%s WHERE id=%s",
                 (approvato_da, scambio_id),

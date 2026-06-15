@@ -297,8 +297,15 @@ async def _step_fureria(update, context, sid, ok: bool):
 
     fureria = db.find_user_by_telegram_id(update.effective_user.id)
     rows, a_occ, b_occ = _override_rows(s)
-    db.approva_scambio(sid, approvato_da=fureria["id"] if fureria else s["vigile_a_id"],
-                       override_rows=rows)
+    try:
+        db.approva_scambio(sid, approvato_da=fureria["id"] if fureria else s["vigile_a_id"],
+                           override_rows=rows)
+    except db.ScambioConflitto as e:
+        await update.callback_query.edit_message_text(
+            f"⚠️ Impossibile approvare: {e}\n"
+            "Annulla prima lo scambio in conflitto, poi riprova."
+        )
+        return
 
     # mail di conferma dall'account della fureria a entrambi i vigili
     mail_ok = False
