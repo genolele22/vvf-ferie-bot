@@ -260,6 +260,23 @@ def build_aggiorna_password_handler() -> ConversationHandler:
 # /ferie — selezione multipla
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _build_mesi_kbd() -> InlineKeyboardMarkup:
+    """Tastiera selezione mese (riusata da /ferie e dal tasto Cambia mese)."""
+    oggi = date.today()
+    buttons = []
+    for i in range(6):
+        mese_offset = oggi.month - 1 + i
+        anno = oggi.year + mese_offset // 12
+        mese = mese_offset % 12 + 1
+        buttons.append(InlineKeyboardButton(
+            f"{MESI_IT[mese]} {anno}",
+            callback_data=f"m:{anno}:{mese:02d}",
+        ))
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("✖️ Annulla", callback_data="fx")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _build_selezione_kbd(
     disponibili: list[tuple[date, str]],
     selezionati: set[str],
@@ -274,10 +291,11 @@ def _build_selezione_kbd(
         buttons.append(InlineKeyboardButton(label, callback_data=f"d:{key}"))
     rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
     n = len(selezionati)
-    rows.append([InlineKeyboardButton(
-        f"Conferma ({n})" if n else "Conferma",
-        callback_data="fc",
-    )])
+    rows.append([
+        InlineKeyboardButton("⬅️ Cambia mese", callback_data="fm"),
+        InlineKeyboardButton(f"Conferma ({n})" if n else "Conferma", callback_data="fc"),
+    ])
+    rows.append([InlineKeyboardButton("✖️ Annulla", callback_data="fx")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -302,19 +320,7 @@ async def ferie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "distaccamento": user["distaccamento"],
     }
 
-    oggi = date.today()
-    buttons = []
-    for i in range(6):
-        mese_offset = oggi.month - 1 + i
-        anno = oggi.year + mese_offset // 12
-        mese = mese_offset % 12 + 1
-        buttons.append(InlineKeyboardButton(
-            f"{MESI_IT[mese]} {anno}",
-            callback_data=f"m:{anno}:{mese:02d}",
-        ))
-
-    kbd = InlineKeyboardMarkup([buttons[i:i+2] for i in range(0, len(buttons), 2)])
-    await update.message.reply_text("Seleziona il mese:", reply_markup=kbd)
+    await update.message.reply_text("Seleziona il mese:", reply_markup=_build_mesi_kbd())
     return F_MESE
 
 
@@ -322,10 +328,14 @@ async def ferie_scegli_mese(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
 
+    w = context.user_data.get("ferie")
+    if not w:
+        await query.edit_message_text("Sessione scaduta. Usa /ferie per ricominciare.")
+        return ConversationHandler.END
+
     _, anno_s, mese_s = query.data.split(":")
     anno, mese = int(anno_s), int(mese_s)
 
-    w       = context.user_data["ferie"]
     gruppo  = w["gruppo"]
     user_id = w["user_id"]
 
@@ -362,9 +372,12 @@ async def ferie_toggle_data(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
 
-    key = query.data[2:]  # rimuove "d:"
-    w   = context.user_data["ferie"]
+    w = context.user_data.get("ferie")
+    if not w or "selezionati" not in w:
+        await query.edit_message_text("Sessione scaduta. Usa /ferie per ricominciare.")
+        return ConversationHandler.END
 
+    key = query.data[2:]  # rimuove "d:"
     if key in w["selezionati"]:
         w["selezionati"].discard(key)
     else:
@@ -375,6 +388,29 @@ async def ferie_toggle_data(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.edit_message_reply_markup(reply_markup=kbd)
     await query.answer(f"{n} turni selezionati" if n else "Deselezionato")
     return F_SELEZIONE
+
+
+async def ferie_torna_mese(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Torna alla scelta del mese (se hai sbagliato mese/giorno)."""
+    query = update.callback_query
+    await query.answer()
+    w = context.user_data.get("ferie")
+    if not w:
+        await query.edit_message_text("Sessione scaduta. Usa /ferie per ricominciare.")
+        return ConversationHandler.END
+    for k in ("disponibili", "selezionati", "anno", "mese"):
+        w.pop(k, None)
+    await query.edit_message_text("Seleziona il mese:", reply_markup=_build_mesi_kbd())
+    return F_MESE
+
+
+async def ferie_annulla_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Annulla l'intera richiesta dal tasto inline."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("ferie", None)
+    await query.edit_message_text("Operazione annullata. Usa /ferie per ricominciare.")
+    return ConversationHandler.END
 
 
 async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -449,10 +485,15 @@ def build_ferie_handler() -> ConversationHandler:
             MessageHandler(filters.Regex("^📅 Richiedi ferie$"), ferie),
         ],
         states={
-            F_MESE:      [CallbackQueryHandler(ferie_scegli_mese, pattern=r"^m:")],
+            F_MESE: [
+                CallbackQueryHandler(ferie_scegli_mese, pattern=r"^m:"),
+                CallbackQueryHandler(ferie_annulla_cb,  pattern=r"^fx$"),
+            ],
             F_SELEZIONE: [
                 CallbackQueryHandler(ferie_toggle_data, pattern=r"^d:"),
                 CallbackQueryHandler(ferie_conferma,    pattern=r"^fc$"),
+                CallbackQueryHandler(ferie_torna_mese,  pattern=r"^fm$"),
+                CallbackQueryHandler(ferie_annulla_cb,  pattern=r"^fx$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", ferie_cancel)],

@@ -7,7 +7,15 @@ import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import database as db
 import outbox_drain
@@ -59,6 +67,23 @@ def _start_http_server():
 
 # ── Telegram bot ──────────────────────────────────────────────────────────────
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cattura ogni eccezione non gestita: logga e avvisa l'utente (mai appeso)."""
+    logger.error("Eccezione non gestita", exc_info=context.error)
+    try:
+        if isinstance(update, Update):
+            if update.callback_query:
+                await update.callback_query.answer(
+                    "Si è verificato un errore. Riprova.", show_alert=True
+                )
+            elif update.effective_message:
+                await update.effective_message.reply_text(
+                    "⚠️ Si è verificato un errore. Riprova, o usa /start per ripartire."
+                )
+    except Exception:
+        pass  # non far fallire l'error handler stesso
+
+
 def main() -> None:
     db.init_db()
     logger.info("Database inizializzato.")
@@ -82,6 +107,9 @@ def main() -> None:
     # ── Scambio salto turno ─────────────────────────────────────────────────────
     for h in build_scambio_handlers():
         app.add_handler(h)
+
+    # ── Error handler globale (nessun utente resta appeso) ──────────────────────
+    app.add_error_handler(error_handler)
 
     logger.info("Bot avviato.")
     app.run_polling(drop_pending_updates=True)

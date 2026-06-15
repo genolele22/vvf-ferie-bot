@@ -804,6 +804,56 @@ def _patch_foglio_esistente(cur, data_iso: str, tipo: str, out_id: int, in_id: i
         )
 
 
+def annulla_scambio_approvato(scambio_id: int):
+    """
+    Annulla uno scambio già approvato (reversibile): per ogni riga override
+    attiva inverte il patch sui fogli esistenti, disattiva la riga e marca lo
+    scambio 'annullato'. I due vigili tornano alla situazione di partenza.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, data, tipo, vigile_out_id, vigile_in_id "
+                "FROM salto_override WHERE scambio_id=%s AND attivo=1",
+                (scambio_id,),
+            )
+            for r in cur.fetchall():
+                _unpatch_foglio_esistente(
+                    cur, str(r["data"]), r["tipo"], r["vigile_out_id"], r["vigile_in_id"]
+                )
+                cur.execute("UPDATE salto_override SET attivo=0 WHERE id=%s", (r["id"],))
+            cur.execute(
+                "UPDATE bot_scambi_salto SET stato='annullato' WHERE id=%s", (scambio_id,)
+            )
+
+
+def _unpatch_foglio_esistente(cur, data_iso: str, tipo: str, out_id: int, in_id: int):
+    """Inverso di _patch_foglio_esistente: in esce dal salto, out (rester canonico) rientra."""
+    cur.execute(
+        "SELECT id FROM fogli_servizio WHERE data_servizio=%s AND tipo_turno=%s",
+        (data_iso, tipo),
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+    fid = row["id"]
+    # in: chi era entrato in salto esce
+    cur.execute(
+        "DELETE FROM salto_servizio WHERE foglio_id=%s AND vigile_id=%s", (fid, in_id)
+    )
+    # out: il rester canonico rientra in salto
+    cur.execute(
+        "SELECT 1 FROM salto_servizio WHERE foglio_id=%s AND vigile_id=%s", (fid, out_id)
+    )
+    if cur.fetchone() is None:
+        nid = _next_id(cur, "salto_servizio")
+        cur.execute(
+            "INSERT INTO salto_servizio (id, foglio_id, vigile_id, richiamato) "
+            "VALUES (%s, %s, %s, 0)",
+            (nid, fid, out_id),
+        )
+
+
 # ── colori patente (per l'ODT) ──────────────────────────────────────────────────
 
 def colori_patente() -> dict[str, str]:

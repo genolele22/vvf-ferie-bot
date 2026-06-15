@@ -262,11 +262,58 @@ async def _step_fureria(update, context, sid, ok: bool):
 
     nota_mail = "📧 Mail di conferma inviata a entrambi." if mail_ok else \
         "⚠️ Mail non inviata (manca l'email/password fureria): avvisa i vigili a voce."
-    await update.callback_query.edit_message_text(f"✅ Scambio approvato.\n{nota_mail}")
+    undo_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("↩️ Annulla scambio", callback_data=f"scs:undo:{sid}"),
+    ]])
+    await update.callback_query.edit_message_text(
+        f"✅ Scambio approvato.\n{nota_mail}", reply_markup=undo_markup
+    )
 
     msg = (f"✅ Scambio salto <b>approvato</b> dalla fureria.\n\n"
            f"• {s['a_cognome']} ora riposa {_fmt(b_occ)}\n"
            f"• {s['b_cognome']} ora riposa {_fmt(a_occ)}")
+    await _notifica(context, s["a_tg"], msg)
+    await _notifica(context, s["b_tg"], msg)
+
+
+# ── Fureria: annulla uno scambio approvato (doppia conferma) ─────────────────────
+
+async def _step_annulla_chiedi(update, context, sid):
+    if update.effective_user.id not in TELEGRAM_FURERIA_IDS:
+        await update.callback_query.answer("Riservato alla fureria.", show_alert=True)
+        return
+    s = db.get_scambio(sid)
+    if not s or s["stato"] != "approvato":
+        await update.callback_query.edit_message_text(
+            "Scambio non annullabile (non approvato o già annullato)."
+        )
+        return
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sì, annulla", callback_data=f"scs:undook:{sid}"),
+        InlineKeyboardButton("✖️ No", callback_data=f"scs:undono:{sid}"),
+    ]])
+    await update.callback_query.edit_message_text(
+        f"Confermi l'annullamento dello scambio salto tra "
+        f"<b>{s['a_cognome']}</b> (B{s['slot_a']}) e <b>{s['b_cognome']}</b> (B{s['slot_b']})?\n"
+        "I due vigili tornano alla situazione di partenza su tutte le date.",
+        reply_markup=markup, parse_mode="HTML",
+    )
+
+
+async def _step_annulla(update, context, sid):
+    if update.effective_user.id not in TELEGRAM_FURERIA_IDS:
+        await update.callback_query.answer("Riservato alla fureria.", show_alert=True)
+        return
+    s = db.get_scambio(sid)
+    if not s or s["stato"] != "approvato":
+        await update.callback_query.edit_message_text("Scambio non annullabile o già annullato.")
+        return
+    db.annulla_scambio_approvato(sid)
+    await update.callback_query.edit_message_text(
+        "↩️ Scambio salto <b>annullato</b>. I due vigili tornano alla situazione di partenza.",
+        parse_mode="HTML",
+    )
+    msg = "↩️ Lo scambio salto è stato <b>annullato</b> dalla fureria. Torni al tuo riposo originale."
     await _notifica(context, s["a_tg"], msg)
     await _notifica(context, s["b_tg"], msg)
 
@@ -297,6 +344,12 @@ async def scambio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _step_fureria(update, context, int(parts[2]), ok=True)
     elif azione == "no":
         await _step_fureria(update, context, int(parts[2]), ok=False)
+    elif azione == "undo":
+        await _step_annulla_chiedi(update, context, int(parts[2]))
+    elif azione == "undook":
+        await _step_annulla(update, context, int(parts[2]))
+    elif azione == "undono":
+        await q.edit_message_text("Annullamento non eseguito. Lo scambio resta valido.")
 
 
 def build_scambio_handlers() -> list:
