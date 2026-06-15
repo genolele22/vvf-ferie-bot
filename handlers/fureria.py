@@ -25,6 +25,12 @@ MENU_FURERIA = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# Etichette dei tasti-menu: fanno SEMPRE da escape, non devono essere catturate
+# come input testuale dentro una conversation (es. periodo agenda, password).
+MENU_ESCAPE = filters.Regex(
+    r"^(📅 Richiedi ferie|📋 Le mie richieste|🔄 Scambia salto|🔑 Aggiorna password|📊 Agenda CSV)$"
+)
+
 AGE_PERIODO = 0
 
 
@@ -169,11 +175,12 @@ def build_agenda_handler() -> ConversationHandler:
             MessageHandler(filters.Regex("^📊 Agenda CSV$"), agenda_start),
         ],
         states={
-            AGE_PERIODO: [MessageHandler(filters.TEXT & ~filters.COMMAND, agenda_periodo)],
+            AGE_PERIODO: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_ESCAPE, agenda_periodo)],
         },
         fallbacks=[CommandHandler("cancel", agenda_cancel)],
         name="agenda_conv",
         persistent=False,
+        allow_reentry=True,
     )
 
 

@@ -21,7 +21,7 @@ import email_service
 import sheets_service
 from config import TELEGRAM_FURERIA_IDS
 from crypto import decrypt, encrypt
-from handlers.fureria import MENU_FURERIA
+from handlers.fureria import MENU_ESCAPE, MENU_FURERIA
 
 logger = logging.getLogger(__name__)
 
@@ -178,12 +178,13 @@ def build_start_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CommandHandler("start", start), MessageHandler(filters.Regex("^/start$"), start)],
         states={
-            S_EMAIL:    [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_email)],
-            S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, start_ricevi_password)],
+            S_EMAIL:    [MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_ESCAPE, start_ricevi_email)],
+            S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_ESCAPE, start_ricevi_password)],
         },
         fallbacks=[CommandHandler("cancel", start_cancel)],
         name="start_conv",
         persistent=False,
+        allow_reentry=True,
     )
 
 
@@ -246,11 +247,12 @@ def build_aggiorna_password_handler() -> ConversationHandler:
             MessageHandler(filters.Regex("^🔑 Aggiorna password$"), aggiorna_password_start),
         ],
         states={
-            S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiorna_password_ricevi)],
+            S_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_ESCAPE, aggiorna_password_ricevi)],
         },
         fallbacks=[CommandHandler("cancel", aggiorna_cancel)],
         name="aggiorna_password_conv",
         persistent=False,
+        allow_reentry=True,
     )
 
 
@@ -456,6 +458,7 @@ def build_ferie_handler() -> ConversationHandler:
         fallbacks=[CommandHandler("cancel", ferie_cancel)],
         name="ferie_conv",
         persistent=False,
+        allow_reentry=True,   # un tasto del menu riapre sempre il flusso, anche da stato bloccato
     )
 
 
