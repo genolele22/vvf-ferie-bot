@@ -92,6 +92,33 @@ async def _notifica(context, chat_id: int, testo: str, markup=None):
 
 # ── A: proposta ─────────────────────────────────────────────────────────────────
 
+def _salti_kbd(lista: list[dict]) -> InlineKeyboardMarkup:
+    """Step 1: i salti (slot) disponibili nel blocco — uno per riga + Annulla."""
+    visti: dict[int, tuple] = {}
+    for c in lista:
+        visti.setdefault(c["slot"], c["occ"])
+    righe = [
+        [InlineKeyboardButton(
+            f"B{slot} — riposo {occ[0].strftime('%d/%m')}",
+            callback_data=f"scs:slot:{slot}",
+        )]
+        for slot, occ in sorted(visti.items())
+    ]
+    righe.append([InlineKeyboardButton("✖️ Annulla", callback_data="scs:x")])
+    return InlineKeyboardMarkup(righe)
+
+
+def _vigili_kbd(lista: list[dict], slot: int) -> InlineKeyboardMarkup:
+    """Step 2: i vigili del salto scelto + Indietro + Annulla."""
+    righe = [
+        [InlineKeyboardButton(f"{c['cognome']} {c['nome']}", callback_data=f"scs:sel:{c['id']}")]
+        for c in lista if c["slot"] == slot
+    ]
+    righe.append([InlineKeyboardButton("⬅️ Altri salti", callback_data="scs:slts")])
+    righe.append([InlineKeyboardButton("✖️ Annulla", callback_data="scs:x")])
+    return InlineKeyboardMarkup(righe)
+
+
 async def scambia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     a = db.find_user_by_telegram_id(update.effective_user.id)
     if not a:
@@ -112,18 +139,45 @@ async def scambia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    bottoni = [
-        [InlineKeyboardButton(
-            f"B{c['slot']} — {c['cognome']}  ({_fmt(c['occ'])})",
-            callback_data=f"scs:sel:{c['id']}",
-        )]
-        for c in lista
-    ]
     await update.message.reply_text(
         f"Scambio salto turno.\nIl tuo prossimo riposo: <b>{_fmt(a_occ)}</b>\n\n"
-        "Con chi vuoi scambiarlo?",
-        reply_markup=InlineKeyboardMarkup(bottoni),
+        "Scegli il <b>salto</b> con cui scambiare:",
+        reply_markup=_salti_kbd(lista),
         parse_mode="HTML",
+    )
+
+
+async def _step_mostra_salti(update, context, a):
+    """Torna alla scelta del salto (Altri salti)."""
+    res = _controparti(a)
+    if res is None or not res[2]:
+        await update.callback_query.edit_message_text("Scambio non più disponibile.")
+        return
+    blocco, a_occ, lista = res
+    await update.callback_query.edit_message_text(
+        f"Scambio salto turno.\nIl tuo prossimo riposo: <b>{_fmt(a_occ)}</b>\n\n"
+        "Scegli il <b>salto</b> con cui scambiare:",
+        reply_markup=_salti_kbd(lista), parse_mode="HTML",
+    )
+
+
+async def _step_scegli_slot(update, context, a, slot):
+    """Mostra i vigili del salto scelto (cascata salto → vigili)."""
+    res = _controparti(a)
+    if res is None:
+        await update.callback_query.edit_message_text("Scambio non più disponibile.")
+        return
+    blocco, a_occ, lista = res
+    vigili = [c for c in lista if c["slot"] == slot]
+    if not vigili:
+        await update.callback_query.edit_message_text(
+            "Nessun vigile disponibile in quel salto. Riprova con 🔄 Scambia salto."
+        )
+        return
+    await update.callback_query.edit_message_text(
+        f"Salto <b>B{slot}</b> — riposo {_fmt(vigili[0]['occ'])}\n\n"
+        "Scegli il vigile con cui scambiare:",
+        reply_markup=_vigili_kbd(lista, slot), parse_mode="HTML",
     )
 
 
@@ -331,8 +385,15 @@ async def scambio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     a = db.find_user_by_telegram_id(update.effective_user.id)
+    if a is None:
+        await q.edit_message_text("Non risulti più registrato. Usa /start.")
+        return
 
-    if azione == "sel":
+    if azione == "slot":
+        await _step_scegli_slot(update, context, a, int(parts[2]))
+    elif azione == "slts":
+        await _step_mostra_salti(update, context, a)
+    elif azione == "sel":
         await _step_seleziona(update, context, a, int(parts[2]))
     elif azione == "go":
         await _step_proponi(update, context, a, int(parts[2]))
