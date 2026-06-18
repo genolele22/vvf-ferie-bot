@@ -705,6 +705,29 @@ def scambi_per_stato(stato: str) -> list[dict]:
             return _fixall(cur.fetchall())
 
 
+def vigili_impegnati_nel_blocco(blocco_inizio: str) -> set[int]:
+    """
+    ID dei vigili già coinvolti in uno scambio ATTIVO (proposto/confermato/
+    approvato) nel blocco indicato (identificato da blocco_inizio).
+    Servono per escluderli dai disponibili: una volta dentro uno scambio in quel
+    blocco non possono comparire in altre proposte dello stesso blocco.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT vigile_a_id, vigile_b_id
+                FROM bot_scambi_salto
+                WHERE blocco_inizio = %s
+                  AND stato IN ('proposto', 'confermato', 'approvato')
+            """, (blocco_inizio,))
+            rows = cur.fetchall()
+    impegnati: set[int] = set()
+    for r in rows:
+        impegnati.add(r["vigile_a_id"])
+        impegnati.add(r["vigile_b_id"])
+    return impegnati
+
+
 def crea_scambio(vigile_a_id: int, vigile_b_id: int, slot_a: int, slot_b: int,
                  blocco_inizio: str, blocco_fine: str, creato_da: int) -> int:
     """Crea una proposta di scambio (stato='proposto'). Ritorna l'id."""

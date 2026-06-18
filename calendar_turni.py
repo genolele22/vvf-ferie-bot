@@ -103,6 +103,17 @@ def blocco_corrente(d: date) -> tuple[date, date]:
     return inizio[1], fine[2]
 
 
+def blocco_successivo(blocco: tuple[date, date]) -> tuple[date, date] | None:
+    """Il blocco B1→B8 immediatamente dopo quello dato, o None se il calendario
+    non arriva fin là."""
+    inizio, _ = blocco
+    occ = _occorrenze()
+    nb_starts = [o for o in occ if o[0] == 1 and o[1] > inizio]
+    if not nb_starts:
+        return None
+    return blocco_corrente(nb_starts[0][1])
+
+
 def slot_dates_in_blocco(slot: int, blocco: tuple[date, date]) -> tuple[date, date] | None:
     """(data_D, data_N) dello slot dentro il blocco, o None se non presente."""
     inizio, fine = blocco
