@@ -14,6 +14,11 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 FURERIA_EMAIL = os.environ["FURERIA_EMAIL"]
 ENCRYPTION_KEY = os.environ["ENCRYPTION_KEY"]
 
+# IMAP: serve per depositare una copia delle mail inviate nella cartella "Inviati"
+# (l'SMTP da solo non lo fa). Default derivato dall'host SMTP (smtp-s → imap-s).
+IMAP_HOST = os.environ.get("IMAP_HOST") or SMTP_HOST.replace("smtp", "imap")
+IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
+
 MYSQL_HOST     = os.environ.get("MYSQL_HOST",     "127.0.0.1")
 MYSQL_PORT     = int(os.environ.get("MYSQL_PORT",    "3306"))
 MYSQL_USER     = os.environ.get("MYSQL_USER",     "root")

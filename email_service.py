@@ -1,11 +1,64 @@
+import imaplib
 import logging
 import smtplib
+import time
 from datetime import date
 from email.message import EmailMessage
 
-from config import SMTP_HOST, SMTP_PORT, FURERIA_EMAIL
+from config import SMTP_HOST, SMTP_PORT, FURERIA_EMAIL, IMAP_HOST, IMAP_PORT
 
 logger = logging.getLogger(__name__)
+
+# Nomi comuni della cartella "Inviati" se il server non espone il flag \Sent.
+_SENT_FALLBACKS = [
+    "Sent", "INBOX.Sent", "Sent Items", "INBOX.Sent Items", "Sent Messages",
+    "Posta inviata", "Inviata", "Inviate",
+]
+
+
+def _find_sent_folder(M: imaplib.IMAP4) -> str | None:
+    """Individua la cartella Inviati: prima via flag speciale \\Sent, poi per nome."""
+    typ, data = M.list()
+    if typ == "OK":
+        for raw in data:
+            line = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+            if "\\Sent" in line:
+                parts = line.split('"')
+                if len(parts) >= 2:
+                    return parts[-2]  # nome cartella, ultimo token tra virgolette
+    for name in _SENT_FALLBACKS:
+        typ, _ = M.select(name, readonly=True)
+        if typ == "OK":
+            return name
+    return None
+
+
+def _append_to_sent(email: str, password: str, msg: EmailMessage) -> bool:
+    """
+    Deposita una copia della mail nella cartella Inviati via IMAP APPEND.
+    Best-effort: la mail è già stata consegnata via SMTP, qui serve solo per la
+    tracciabilità lato mittente. Non solleva: logga e ritorna False se fallisce.
+    """
+    try:
+        M = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=10)
+        try:
+            M.login(email, password)
+            folder = _find_sent_folder(M)
+            if not folder:
+                logger.warning("IMAP: cartella Inviati non trovata per %s", email)
+                return False
+            M.append(folder, r"(\Seen)", imaplib.Time2Internaldate(time.time()),
+                     msg.as_bytes())
+            logger.info("Copia salvata in '%s' per %s", folder, email)
+            return True
+        finally:
+            try:
+                M.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("IMAP append in Inviati fallito per %s: %s", email, e)
+        return False
 
 TIPO_LABEL = {
     "D":  "Diurno ☀️",
@@ -82,6 +135,7 @@ def send_ferie_requests(
     try:
         with _smtp_connect(pompiere_email, pompiere_password) as smtp:
             smtp.send_message(msg)
+        _append_to_sent(pompiere_email, pompiere_password, msg)
         logger.info("Email ferie inviata da %s (%s)", pompiere_email, ids_str)
         return True
     except Exception as e:
@@ -128,6 +182,7 @@ def send_scambio_conferma(
     try:
         with _smtp_connect(fureria_email, fureria_password) as smtp:
             smtp.send_message(msg)
+        _append_to_sent(fureria_email, fureria_password, msg)
         logger.info("Email scambio inviata a %s", destinatari)
         return True
     except Exception as e:
@@ -163,6 +218,7 @@ def send_ferie_conferma(
     try:
         with _smtp_connect(fureria_email, fureria_password) as smtp:
             smtp.send_message(msg)
+        _append_to_sent(fureria_email, fureria_password, msg)
         logger.info("Email conferma ferie inviata a %s (%s %s)", vigile_email, data_str, tipo)
         return True
     except Exception as e:
@@ -205,6 +261,7 @@ def send_cancellation_email(
     try:
         with _smtp_connect(pompiere_email, pompiere_password) as smtp:
             smtp.send_message(msg)
+        _append_to_sent(pompiere_email, pompiere_password, msg)
         logger.info("Email annullamento inviata da %s (#%s)", pompiere_email, request_id)
         return True
     except Exception as e:
