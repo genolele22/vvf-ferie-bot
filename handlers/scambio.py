@@ -228,6 +228,22 @@ def scambi_riepilogo(user: dict) -> tuple[list[str], list[list[InlineKeyboardBut
     return righe, bottoni
 
 
+async def _mostra_scambi_lista(q, user: dict, intro: str = "") -> None:
+    """Rigenera la lista dei cambi salto nello stesso messaggio: così se ne può
+    annullare un altro senza riaprire 'le mie richieste'."""
+    righe, bottoni = scambi_riepilogo(user)
+    if righe:
+        await q.edit_message_text(
+            intro + "I tuoi cambi salto:\n\n" + "\n\n".join(righe),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(bottoni) if bottoni else None,
+        )
+    elif intro:
+        await q.edit_message_text(intro + "Non hai altri cambi salto in corso.")
+    else:
+        await q.edit_message_text("Non hai cambi salto in corso.")
+
+
 async def scambia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     a = db.find_user_by_telegram_id(update.effective_user.id)
     if not a:
@@ -410,10 +426,6 @@ async def _step_a_annulla(update, context, sid):
 
     era = s["stato"]
     db.annulla_scambio(sid)
-    await q.edit_message_text(
-        "↩️ Richiesta di scambio annullata. Quel blocco torna libero — "
-        "riapri 🔄 Scambia salto per le nuove opzioni."
-    )
     await _notifica(context, s["b_tg"],
                     f"↩️ {s['a_cognome']} ha annullato la richiesta di scambio salto.")
     # Se B aveva già confermato, la proposta era in coda alla fureria: avvisala.
@@ -422,6 +434,10 @@ async def _step_a_annulla(update, context, sid):
             await _notifica(context, fid,
                             f"↩️ {s['a_cognome']} ha annullato lo scambio con "
                             f"{s['b_cognome']} (era in attesa di approvazione).")
+
+    # Rigenera la lista scambi nello stesso messaggio (si può annullarne un altro).
+    user = db.find_user_by_telegram_id(update.effective_user.id)
+    await _mostra_scambi_lista(q, user, "✅ Scambio annullato.\n\n")
 
 
 # ── B: conferma / rifiuto ────────────────────────────────────────────────────────
@@ -597,7 +613,7 @@ async def scambio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif azione == "acanck":
         await _step_a_annulla(update, context, int(parts[2]))
     elif azione == "acancno":
-        await q.edit_message_text("Annullamento non eseguito. Lo scambio resta valido.")
+        await _mostra_scambi_lista(q, a)
     elif azione == "bok":
         await _step_b_risponde(update, context, int(parts[2]), ok=True)
     elif azione == "bno":

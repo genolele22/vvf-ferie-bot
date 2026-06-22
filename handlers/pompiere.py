@@ -508,36 +508,41 @@ def build_ferie_handler() -> ConversationHandler:
 # /mie_richieste
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _ferie_lista(user: dict) -> tuple[str, InlineKeyboardMarkup | None] | None:
+    """(testo Markdown, tastiera) della lista richieste ferie del vigile, con un
+    tasto Annulla per ogni pending. None se non ha richieste. Riusato per
+    rigenerare la lista in-place dopo un annullamento."""
+    richieste = db.get_requests_by_user(user["id"])
+    if not richieste:
+        return None
+    righe, bottoni = [], []
+    for r in richieste:
+        d        = date.fromisoformat(r["data_richiesta"])
+        tipo_str = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
+        prefix   = "❌ " if r["stato"] == "rejected" else ""
+        riga     = f"{prefix}{d.strftime('%d/%m/%Y')} — {tipo_str}"
+        if r["stato"] == "rejected" and r["note_rifiuto"]:
+            riga += f"\n   ↳ _{r['note_rifiuto']}_"
+        righe.append(riga)
+        if r["stato"] == "pending":
+            bottoni.append([InlineKeyboardButton(
+                f"❌ Annulla {d.strftime('%d/%m')} — {tipo_str}",
+                callback_data=f"annulla:{r['id']}",
+            )])
+    testo  = "Le tue richieste ferie:\n\n" + "\n".join(righe)
+    return testo, (InlineKeyboardMarkup(bottoni) if bottoni else None)
+
+
 async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await _get_registered_user(update)
     if not user:
         return
 
-    # ── Ferie ──────────────────────────────────────────────────────────────
-    richieste = db.get_requests_by_user(user["id"])
-    if richieste:
-        righe = []
-        bottoni_annulla = []
-        for r in richieste:
-            d        = date.fromisoformat(r["data_richiesta"])
-            tipo_str = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
-            prefix   = "❌ " if r["stato"] == "rejected" else ""
-            riga     = f"{prefix}{d.strftime('%d/%m/%Y')} — {tipo_str}"
-            if r["stato"] == "rejected" and r["note_rifiuto"]:
-                riga += f"\n   ↳ _{r['note_rifiuto']}_"
-            righe.append(riga)
-            if r["stato"] == "pending":
-                bottoni_annulla.append([InlineKeyboardButton(
-                    f"❌ Annulla {d.strftime('%d/%m')} — {tipo_str}",
-                    callback_data=f"annulla:{r['id']}",
-                )])
-        await update.message.reply_text(
-            "Le tue richieste ferie:\n\n" + "\n".join(righe),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(bottoni_annulla) if bottoni_annulla else None,
-        )
+    ferie = _ferie_lista(user)
+    if ferie:
+        testo, markup = ferie
+        await update.message.reply_text(testo, parse_mode="Markdown", reply_markup=markup)
 
-    # ── Cambi salto ────────────────────────────────────────────────────────
     righe_s, bottoni_s = scambi_riepilogo(user)
     if righe_s:
         await update.message.reply_text(
@@ -546,7 +551,7 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             reply_markup=InlineKeyboardMarkup(bottoni_s) if bottoni_s else None,
         )
 
-    if not richieste and not righe_s:
+    if not ferie and not righe_s:
         await update.message.reply_text("Non hai ancora nessuna richiesta (ferie o cambio salto).")
 
 
@@ -577,41 +582,56 @@ async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAU
 
 
 async def annulla_conferma_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Conferma 'Sì, annulla' → cancella davvero la richiesta ferie."""
+    """Conferma 'Sì, annulla' → cancella, poi rigenera la lista aggiornata."""
     query = update.callback_query
+    await query.answer()
     user  = db.find_user_by_telegram_id(update.effective_user.id)
     if not user:
-        await query.answer("Utente non trovato.", show_alert=True)
+        await query.edit_message_text("Utente non trovato.")
         return
 
     request_id = int(query.data.split(":")[1])
     richiesta  = db.get_request(request_id)
     cancellata = db.delete_request(request_id, user["id"])
 
-    if cancellata:
-        await query.edit_message_text("Richiesta annullata.")
-        if richiesta:
-            d_ann = date.fromisoformat(richiesta["data_richiesta"])
-            sheets_service.aggiorna_mese(
-                user_id=user["id"],
-                nome=user["nome"],
-                cognome=user["cognome"],
-                gruppo=user["gruppo_turno"],
-                distaccamento=user["distaccamento"],
-                anno=d_ann.year,
-                mese=d_ann.month,
-            )
-        if richiesta and user["email_password_enc"]:
+    if cancellata and richiesta:
+        d_ann = date.fromisoformat(richiesta["data_richiesta"])
+        sheets_service.aggiorna_mese(
+            user_id=user["id"],
+            nome=user["nome"],
+            cognome=user["cognome"],
+            gruppo=user["gruppo_turno"],
+            distaccamento=user["distaccamento"],
+            anno=d_ann.year,
+            mese=d_ann.month,
+        )
+        if user["email_password_enc"]:
             await _invia_notifica_annullamento(context, user, richiesta)
-    else:
-        await query.answer("Richiesta non trovata o già processata.", show_alert=True)
+
+    intro = "✅ Richiesta annullata.\n\n" if cancellata else "⚠️ Richiesta già processata.\n\n"
+    await _rimostra_ferie(query, user, intro)
 
 
 async def annulla_no_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Conferma 'No' → non cancella nulla."""
-    await update.callback_query.edit_message_text(
-        "Annullamento non eseguito. La richiesta resta valida."
-    )
+    """Conferma 'No' → non cancella, torna alla lista aggiornata."""
+    query = update.callback_query
+    await query.answer()
+    user = db.find_user_by_telegram_id(update.effective_user.id)
+    if user:
+        await _rimostra_ferie(query, user, "")
+
+
+async def _rimostra_ferie(query, user: dict, intro: str) -> None:
+    """Rigenera la lista ferie nello stesso messaggio: così si può annullare un
+    altro giorno senza riaprire 'le mie richieste'."""
+    ferie = _ferie_lista(user)
+    if ferie:
+        testo, markup = ferie
+        await query.edit_message_text(intro + testo, parse_mode="Markdown", reply_markup=markup)
+    elif intro:
+        await query.edit_message_text(intro + "Non hai altre richieste ferie.")
+    else:
+        await query.edit_message_text("Non hai richieste ferie.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
