@@ -376,6 +376,26 @@ async def _step_proponi(update, context, a, b_id, bi):
 
 # ── A: ritira la propria proposta (prima dell'approvazione) ──────────────────────
 
+async def _step_a_annulla_chiedi(update, context, sid):
+    """Tap su Annulla → chiede conferma (doppia conferma) prima di ritirare."""
+    q = update.callback_query
+    s = db.get_scambio(sid)
+    if not s or s["stato"] not in ("proposto", "confermato"):
+        await q.edit_message_text("Richiesta non più annullabile (già gestita o approvata).")
+        return
+    if update.effective_user.id != s["a_tg"]:
+        await q.answer("Non è una tua richiesta.", show_alert=True)
+        return
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sì, annulla", callback_data=f"scs:acanck:{sid}"),
+        InlineKeyboardButton("✖️ No",          callback_data="scs:acancno"),
+    ]])
+    await q.edit_message_text(
+        f"Vuoi annullare la richiesta di scambio salto con <b>{s['b_cognome']}</b>?",
+        reply_markup=markup, parse_mode="HTML",
+    )
+
+
 async def _step_a_annulla(update, context, sid):
     """A annulla la sua richiesta finché è proposto/confermato (no override ancora
     scritti → basta lo stato 'annullato' a liberare il lock del blocco)."""
@@ -573,7 +593,11 @@ async def scambio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif azione == "go":
         await _step_proponi(update, context, a, int(parts[2]), int(parts[3]))
     elif azione == "acanc":
+        await _step_a_annulla_chiedi(update, context, int(parts[2]))
+    elif azione == "acanck":
         await _step_a_annulla(update, context, int(parts[2]))
+    elif azione == "acancno":
+        await q.edit_message_text("Annullamento non eseguito. Lo scambio resta valido.")
     elif azione == "bok":
         await _step_b_risponde(update, context, int(parts[2]), ok=True)
     elif azione == "bno":

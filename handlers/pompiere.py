@@ -551,6 +551,7 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tap su 'Annulla' → chiede conferma (non cancella ancora)."""
     query = update.callback_query
     user  = db.find_user_by_telegram_id(update.effective_user.id)
     if not user:
@@ -558,10 +559,33 @@ async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAU
         return
 
     request_id = int(query.data.split(":")[1])
+    richiesta  = db.get_request(request_id)
+    if not richiesta:
+        await query.answer("Richiesta non trovata o già processata.", show_alert=True)
+        return
 
-    # Recupera i dati prima di cancellare
-    richiesta = db.get_request(request_id)
+    d        = date.fromisoformat(richiesta["data_richiesta"])
+    tipo_str = TIPO_LABEL.get(richiesta["tipo_turno"], richiesta["tipo_turno"])
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sì, annulla", callback_data=f"annullaok:{request_id}"),
+        InlineKeyboardButton("✖️ No",          callback_data="annullano"),
+    ]])
+    await query.edit_message_text(
+        f"Vuoi annullare la richiesta ferie del {d.strftime('%d/%m/%Y')} — {tipo_str}?",
+        reply_markup=markup,
+    )
 
+
+async def annulla_conferma_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Conferma 'Sì, annulla' → cancella davvero la richiesta ferie."""
+    query = update.callback_query
+    user  = db.find_user_by_telegram_id(update.effective_user.id)
+    if not user:
+        await query.answer("Utente non trovato.", show_alert=True)
+        return
+
+    request_id = int(query.data.split(":")[1])
+    richiesta  = db.get_request(request_id)
     cancellata = db.delete_request(request_id, user["id"])
 
     if cancellata:
@@ -581,6 +605,13 @@ async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAU
             await _invia_notifica_annullamento(context, user, richiesta)
     else:
         await query.answer("Richiesta non trovata o già processata.", show_alert=True)
+
+
+async def annulla_no_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Conferma 'No' → non cancella nulla."""
+    await update.callback_query.edit_message_text(
+        "Annullamento non eseguito. La richiesta resta valida."
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

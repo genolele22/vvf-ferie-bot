@@ -21,6 +21,8 @@ import database as db
 import outbox_drain
 from config import TELEGRAM_BOT_TOKEN
 from handlers.pompiere import (
+    annulla_conferma_callback,
+    annulla_no_callback,
     annulla_richiesta_callback,
     build_aggiorna_password_handler,
     build_ferie_handler,
@@ -100,6 +102,8 @@ def main() -> None:
     app.add_handler(CommandHandler("mie_richieste", mie_richieste))
     app.add_handler(MessageHandler(filters.Regex("^📋 Le mie richieste$"), mie_richieste))
     app.add_handler(CallbackQueryHandler(annulla_richiesta_callback, pattern=r"^annulla:"))
+    app.add_handler(CallbackQueryHandler(annulla_conferma_callback,  pattern=r"^annullaok:"))
+    app.add_handler(CallbackQueryHandler(annulla_no_callback,        pattern=r"^annullano$"))
 
     # ── Fureria ───────────────────────────────────────────────────────────────
     app.add_handler(build_agenda_handler())
