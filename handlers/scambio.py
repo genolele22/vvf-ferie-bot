@@ -151,21 +151,55 @@ def _vigili_kbd(lista: list[dict], slot: int, bi: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(righe)
 
 
+def _miei_scambi_testo(miei: list[dict]) -> str:
+    """Elenco delle proposte di scambio già aperte da A (lo bloccano nel blocco)."""
+    righe = ["<b>Hai già una richiesta di scambio aperta</b>",
+             "(ti blocca quel blocco finché non arriva una risposta):", ""]
+    for s in miei:
+        blocco = (date.fromisoformat(s["blocco_inizio"]), date.fromisoformat(s["blocco_fine"]))
+        a_occ = cal.slot_dates_in_blocco(s["slot_a"], blocco)
+        b_occ = cal.slot_dates_in_blocco(s["slot_b"], blocco)
+        righe.append(
+            f"• con <b>{s['b_cognome']}</b> (B{s['slot_b']}) — <i>{s['stato']}</i>\n"
+            f"   cedi {_fmt(a_occ) if a_occ else '?'}, "
+            f"prenderesti {_fmt(b_occ) if b_occ else '?'}"
+        )
+    return "\n".join(righe)
+
+
+def _miei_scambi_kbd(miei: list[dict]) -> InlineKeyboardMarkup:
+    """Un tasto 'Annulla' per ogni proposta aperta di A."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"↩️ Annulla la richiesta con {s['b_cognome']}",
+                              callback_data=f"scs:acanc:{s['id']}")]
+        for s in miei
+    ])
+
+
 async def scambia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     a = db.find_user_by_telegram_id(update.effective_user.id)
     if not a:
         await update.message.reply_text("Non sei registrato. Usa /start.")
         return
 
+    # Proposte già aperte da A: le mostra con tasto Annulla (lo bloccano nel blocco).
+    miei = db.scambi_attivi_di(a["id"])
+    if miei:
+        await update.message.reply_text(
+            _miei_scambi_testo(miei), reply_markup=_miei_scambi_kbd(miei), parse_mode="HTML",
+        )
+
     lista = _controparti(a)
     if lista is None:
-        await update.message.reply_text("Nessun salto futuro trovato per il tuo slot.")
+        if not miei:
+            await update.message.reply_text("Nessun salto futuro trovato per il tuo slot.")
         return
     if not lista:
-        await update.message.reply_text(
-            "Nessuna controparte disponibile nei prossimi due blocchi "
-            "(riposi già passati, colleghi non registrati o già impegnati in uno scambio).",
-        )
+        if not miei:
+            await update.message.reply_text(
+                "Nessuna controparte disponibile nei prossimi due blocchi "
+                "(riposi già passati, colleghi non registrati o già impegnati in uno scambio).",
+            )
         return
 
     await update.message.reply_text(
@@ -264,6 +298,36 @@ async def _step_proponi(update, context, a, b_id, bi):
         f"Confermi?",
         markup,
     )
+
+
+# ── A: ritira la propria proposta (prima dell'approvazione) ──────────────────────
+
+async def _step_a_annulla(update, context, sid):
+    """A annulla la sua richiesta finché è proposto/confermato (no override ancora
+    scritti → basta lo stato 'annullato' a liberare il lock del blocco)."""
+    q = update.callback_query
+    s = db.get_scambio(sid)
+    if not s or s["stato"] not in ("proposto", "confermato"):
+        await q.edit_message_text("Richiesta non più annullabile (già gestita o approvata).")
+        return
+    if update.effective_user.id != s["a_tg"]:
+        await q.answer("Non è una tua richiesta.", show_alert=True)
+        return
+
+    era = s["stato"]
+    db.annulla_scambio(sid)
+    await q.edit_message_text(
+        "↩️ Richiesta di scambio annullata. Quel blocco torna libero — "
+        "riapri 🔄 Scambia salto per le nuove opzioni."
+    )
+    await _notifica(context, s["b_tg"],
+                    f"↩️ {s['a_cognome']} ha annullato la richiesta di scambio salto.")
+    # Se B aveva già confermato, la proposta era in coda alla fureria: avvisala.
+    if era == "confermato":
+        for fid in TELEGRAM_FURERIA_IDS:
+            await _notifica(context, fid,
+                            f"↩️ {s['a_cognome']} ha annullato lo scambio con "
+                            f"{s['b_cognome']} (era in attesa di approvazione).")
 
 
 # ── B: conferma / rifiuto ────────────────────────────────────────────────────────
@@ -430,6 +494,8 @@ async def scambio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _step_seleziona(update, context, a, int(parts[2]), int(parts[3]))
     elif azione == "go":
         await _step_proponi(update, context, a, int(parts[2]), int(parts[3]))
+    elif azione == "acanc":
+        await _step_a_annulla(update, context, int(parts[2]))
     elif azione == "bok":
         await _step_b_risponde(update, context, int(parts[2]), ok=True)
     elif azione == "bno":

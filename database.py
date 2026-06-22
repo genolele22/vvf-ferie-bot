@@ -705,6 +705,20 @@ def scambi_per_stato(stato: str) -> list[dict]:
             return _fixall(cur.fetchall())
 
 
+def scambi_attivi_di(vigile_id: int) -> list[dict]:
+    """Scambi ATTIVI (proposto/confermato) PROPOSTI da questo vigile (lui è A).
+    Servono per fargli ritirare la propria richiesta prima dell'approvazione."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                _SCAMBIO_SEL + """ WHERE s.vigile_a_id = %s
+                      AND s.stato IN ('proposto', 'confermato')
+                    ORDER BY s.creato_il""",
+                (vigile_id,),
+            )
+            return _fixall(cur.fetchall())
+
+
 def vigili_impegnati_nel_blocco(blocco_inizio: str) -> set[int]:
     """
     ID dei vigili già coinvolti in uno scambio ATTIVO (proposto/confermato/
