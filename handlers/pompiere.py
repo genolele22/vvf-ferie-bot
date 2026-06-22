@@ -409,7 +409,7 @@ async def ferie_annulla_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
     context.user_data.pop("ferie", None)
-    await query.edit_message_text("Operazione annullata. Usa /ferie per ricominciare.")
+    await query.edit_message_text("Operazione annullata.")
     return ConversationHandler.END
 
 
@@ -431,7 +431,7 @@ async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ids.append((request_id, data_iso, tipo))
 
     elenco = "\n".join(
-        f"• #{rid} {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
+        f"• {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
         for rid, d, t in ids
     )
     await query.edit_message_text(
@@ -529,7 +529,7 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         righe.append(riga)
         if r["stato"] == "pending":
             bottoni_annulla.append([InlineKeyboardButton(
-                f"❌ Annulla #{r['id']} ({d.strftime('%d/%m')})",
+                f"❌ Annulla {d.strftime('%d/%m')} — {tipo_str}",
                 callback_data=f"annulla:{r['id']}",
             )])
 
@@ -556,7 +556,7 @@ async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAU
     cancellata = db.delete_request(request_id, user["id"])
 
     if cancellata:
-        await query.edit_message_text(f"Richiesta #{request_id} annullata.")
+        await query.edit_message_text("Richiesta annullata.")
         if richiesta:
             d_ann = date.fromisoformat(richiesta["data_richiesta"])
             sheets_service.aggiorna_mese(
@@ -603,7 +603,7 @@ async def _invia_notifica_annullamento(
     testo = (
         f"❌ Annullamento ferie — {user['nome']} {user['cognome']}\n"
         f"Gruppo: {user['gruppo_turno']} — {user['distaccamento']}\n\n"
-        f"  • #{richiesta['id']} {data_str} {tipo_str}"
+        f"  • {data_str} {tipo_str}"
     )
     for chat_id in TELEGRAM_FURERIA_IDS:
         try:
@@ -618,7 +618,7 @@ async def _notifica_fureria_telegram(
     w: dict,
 ) -> None:
     elenco = "\n".join(
-        f"  • #{rid} {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
+        f"  • {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
         for rid, d, t in ids
     )
     testo = (

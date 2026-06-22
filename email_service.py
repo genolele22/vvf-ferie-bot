@@ -128,7 +128,6 @@ def send_ferie_requests(
         f"Distaccamento:  {distaccamento}\n"
         f"Gruppo turno:   {gruppo}\n\n"
         f"Giorni richiesti:\n{righe}\n\n"
-        f"IDs richiesta: {ids_str}\n\n"
         f"Per rispondere usa direttamente Rispondi a questa email."
     )
 
@@ -255,7 +254,6 @@ def send_cancellation_email(
         f"Distaccamento:  {distaccamento}\n"
         f"Gruppo turno:   {gruppo}\n\n"
         f"Giorno annullato: {data_str}  {tipo_str}\n"
-        f"ID richiesta:     #{request_id}\n"
     )
 
     try:
