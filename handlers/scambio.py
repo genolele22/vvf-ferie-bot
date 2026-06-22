@@ -34,6 +34,12 @@ def _fmt(par: tuple[date, date]) -> str:
     return f"{d.strftime('%d/%m')} ☀️ + {n.strftime('%d/%m')} 🌙"
 
 
+# Quanti blocchi futuri offrire nella scelta (dal blocco del prossimo riposo di A).
+# Tenuto a 5 perché un blocco può essere "lockato" (A già impegnato lì) e sparire:
+# così ne restano comunque almeno 4 visibili.
+N_BLOCCHI_SCAMBIO = 5
+
+
 def _blocco_di(slot: int) -> tuple[tuple[date, date], tuple[date, date]] | None:
     """(blocco, occorrenza_dello_slot) per il prossimo riposo futuro dello slot."""
     occ = cal.prossimo_salto(slot, date.today())
@@ -64,12 +70,14 @@ def _controparti(a_user: dict) -> list[dict] | None:
     if first is None:
         return None
 
-    blocchi: list[tuple[tuple[date, date], tuple[date, date]]] = [(first[0], first[1])]
-    b2 = cal.blocco_successivo(first[0])
-    if b2 is not None:
-        a_occ2 = cal.slot_dates_in_blocco(a_slot, b2)
-        if a_occ2 is not None:
-            blocchi.append((b2, a_occ2))
+    # Fino a N_BLOCCHI_SCAMBIO blocchi futuri, dal blocco del prossimo riposo di A.
+    blocchi: list[tuple[tuple[date, date], tuple[date, date]]] = []
+    blocco = first[0]
+    while blocco is not None and len(blocchi) < N_BLOCCHI_SCAMBIO:
+        a_occ_b = cal.slot_dates_in_blocco(a_slot, blocco)
+        if a_occ_b is not None:
+            blocchi.append((blocco, a_occ_b))
+        blocco = cal.blocco_successivo(blocco)
 
     oggi = date.today()
     vigili = db.vigili_turno_b_registrati()
@@ -122,31 +130,48 @@ async def _notifica(context, chat_id: int, testo: str, markup=None):
 
 # ── A: proposta ─────────────────────────────────────────────────────────────────
 
-def _salti_kbd(lista: list[dict]) -> InlineKeyboardMarkup:
-    """Step 1: i salti disponibili nei due blocchi — uno per (slot, blocco) + Annulla.
-    La data di riposo distingue lo stesso slot nei due blocchi."""
-    visti: dict[tuple[int, int], tuple] = {}
+def _blocchi_kbd(lista: list[dict]) -> InlineKeyboardMarkup:
+    """Step 1: un tasto per blocco (da → a), dal più vicino + Annulla."""
+    visti: dict[int, tuple] = {}  # bi -> (blocco, a_occ)
     for c in lista:
-        visti.setdefault((c["slot"], c["bi"]), c["occ"])
+        visti.setdefault(c["bi"], (c["blocco"], c["a_occ"]))
     righe = [
         [InlineKeyboardButton(
-            f"B{slot} — riposo {occ[0].strftime('%d/%m')}",
-            callback_data=f"scs:slot:{slot}:{bi}",
+            f"📅 {blocco[0].strftime('%d/%m')} → {blocco[1].strftime('%d/%m')}",
+            callback_data=f"scs:blk:{bi}",
         )]
-        for (slot, bi), occ in sorted(visti.items(), key=lambda kv: kv[1][0])
+        for bi, (blocco, a_occ) in sorted(visti.items())
     ]
     righe.append([InlineKeyboardButton("✖️ Annulla", callback_data="scs:x")])
     return InlineKeyboardMarkup(righe)
 
 
+def _salti_kbd(lista: list[dict], bi: int) -> InlineKeyboardMarkup:
+    """Step 2: i salti disponibili NEL blocco scelto + Indietro (blocchi) + Annulla."""
+    visti: dict[int, tuple] = {}  # slot -> occ
+    for c in lista:
+        if c["bi"] == bi:
+            visti.setdefault(c["slot"], c["occ"])
+    righe = [
+        [InlineKeyboardButton(
+            f"B{slot} — riposo {occ[0].strftime('%d/%m')}",
+            callback_data=f"scs:slot:{slot}:{bi}",
+        )]
+        for slot, occ in sorted(visti.items(), key=lambda kv: kv[1][0])
+    ]
+    righe.append([InlineKeyboardButton("⬅️ Blocchi", callback_data="scs:blks")])
+    righe.append([InlineKeyboardButton("✖️ Annulla", callback_data="scs:x")])
+    return InlineKeyboardMarkup(righe)
+
+
 def _vigili_kbd(lista: list[dict], slot: int, bi: int) -> InlineKeyboardMarkup:
-    """Step 2: i vigili del salto scelto (in quel blocco) + Indietro + Annulla."""
+    """Step 3: i vigili del salto scelto (in quel blocco) + Indietro (salti) + Annulla."""
     righe = [
         [InlineKeyboardButton(f"{c['cognome']} {c['nome']}",
                               callback_data=f"scs:sel:{c['id']}:{bi}")]
         for c in lista if c["slot"] == slot and c["bi"] == bi
     ]
-    righe.append([InlineKeyboardButton("⬅️ Altri salti", callback_data="scs:slts")])
+    righe.append([InlineKeyboardButton("⬅️ Altri salti", callback_data=f"scs:slts:{bi}")])
     righe.append([InlineKeyboardButton("✖️ Annulla", callback_data="scs:x")])
     return InlineKeyboardMarkup(righe)
 
@@ -197,27 +222,49 @@ async def scambia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lista:
         if not miei:
             await update.message.reply_text(
-                "Nessuna controparte disponibile nei prossimi due blocchi "
+                "Nessuna controparte disponibile nei prossimi blocchi "
                 "(riposi già passati, colleghi non registrati o già impegnati in uno scambio).",
             )
         return
 
     await update.message.reply_text(
-        "Scambio salto turno.\n\nScegli il <b>salto</b> con cui scambiare:",
-        reply_markup=_salti_kbd(lista),
+        "Scambio salto turno.\n\nScegli il <b>blocco</b>:",
+        reply_markup=_blocchi_kbd(lista),
         parse_mode="HTML",
     )
 
 
-async def _step_mostra_salti(update, context, a):
-    """Torna alla scelta del salto (Altri salti)."""
+async def _step_mostra_blocchi(update, context, a):
+    """Torna alla scelta del blocco."""
     lista = _controparti(a)
     if not lista:
         await update.callback_query.edit_message_text("Scambio non più disponibile.")
         return
     await update.callback_query.edit_message_text(
-        "Scambio salto turno.\n\nScegli il <b>salto</b> con cui scambiare:",
-        reply_markup=_salti_kbd(lista), parse_mode="HTML",
+        "Scambio salto turno.\n\nScegli il <b>blocco</b>:",
+        reply_markup=_blocchi_kbd(lista), parse_mode="HTML",
+    )
+
+
+async def _step_scegli_blocco(update, context, a, bi):
+    """Scelto il blocco → mostra i salti disponibili in quel blocco."""
+    lista = _controparti(a)
+    if not lista:
+        await update.callback_query.edit_message_text("Scambio non più disponibile.")
+        return
+    voci = [c for c in lista if c["bi"] == bi]
+    if not voci:
+        await update.callback_query.edit_message_text(
+            "Blocco non più disponibile. Riprova con 🔄 Scambia salto."
+        )
+        return
+    blocco = voci[0]["blocco"]
+    a_occ = voci[0]["a_occ"]
+    await update.callback_query.edit_message_text(
+        f"Blocco <b>{blocco[0].strftime('%d/%m')} → {blocco[1].strftime('%d/%m')}</b>\n"
+        f"Tu (B{a['salto_id']}) cedi <b>{_fmt(a_occ)}</b>\n\n"
+        "Scegli il <b>salto</b> con cui scambiare:",
+        reply_markup=_salti_kbd(lista, bi), parse_mode="HTML",
     )
 
 
@@ -486,10 +533,14 @@ async def scambio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Non risulti più registrato. Usa /start.")
         return
 
-    if azione == "slot":
+    if azione == "blk":
+        await _step_scegli_blocco(update, context, a, int(parts[2]))
+    elif azione == "blks":
+        await _step_mostra_blocchi(update, context, a)
+    elif azione == "slot":
         await _step_scegli_slot(update, context, a, int(parts[2]), int(parts[3]))
     elif azione == "slts":
-        await _step_mostra_salti(update, context, a)
+        await _step_scegli_blocco(update, context, a, int(parts[2]))
     elif azione == "sel":
         await _step_seleziona(update, context, a, int(parts[2]), int(parts[3]))
     elif azione == "go":
