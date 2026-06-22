@@ -132,15 +132,15 @@ async def _notifica(context, chat_id: int, testo: str, markup=None):
 
 def _blocchi_kbd(lista: list[dict]) -> InlineKeyboardMarkup:
     """Step 1: un tasto per blocco (da → a), dal più vicino + Annulla."""
-    visti: dict[int, tuple] = {}  # bi -> (blocco, a_occ)
+    visti: dict[int, tuple] = {}  # bi -> blocco
     for c in lista:
-        visti.setdefault(c["bi"], (c["blocco"], c["a_occ"]))
+        visti.setdefault(c["bi"], c["blocco"])
     righe = [
         [InlineKeyboardButton(
             f"📅 {blocco[0].strftime('%d/%m')} → {blocco[1].strftime('%d/%m')}",
             callback_data=f"scs:blk:{bi}",
         )]
-        for bi, (blocco, a_occ) in sorted(visti.items())
+        for bi, blocco in sorted(visti.items())
     ]
     righe.append([InlineKeyboardButton("✖️ Annulla", callback_data="scs:x")])
     return InlineKeyboardMarkup(righe)
@@ -375,7 +375,7 @@ async def _step_proponi(update, context, a, b_id, bi):
 
     # notifica B
     s = db.get_scambio(sid)
-    rows, a_occ2, b_occ2 = _override_rows(s)
+    _, a_occ2, b_occ2 = _override_rows(s)
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Confermo", callback_data=f"scs:bok:{sid}"),
         InlineKeyboardButton("✖️ Rifiuto", callback_data=f"scs:bno:{sid}"),
@@ -461,7 +461,7 @@ async def _step_b_risponde(update, context, sid, ok: bool):
     await update.callback_query.edit_message_text("Confermato. In attesa dell'approvazione della fureria.")
     await _notifica(context, s["a_tg"], f"✅ {s['b_cognome']} ha confermato. In attesa della fureria.")
 
-    rows, a_occ, b_occ = _override_rows(s)
+    _, a_occ, b_occ = _override_rows(s)
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Approva", callback_data=f"scs:ok:{sid}"),
         InlineKeyboardButton("✖️ Rifiuta", callback_data=f"scs:no:{sid}"),

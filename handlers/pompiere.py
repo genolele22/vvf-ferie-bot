@@ -433,7 +433,7 @@ async def ferie_conferma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elenco = "\n".join(
         f"• {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
-        for rid, d, t in ids
+        for _, d, t in ids
     )
     await query.edit_message_text(
         f"*{len(ids)} richieste inviate:*\n{elenco}\n\n"
@@ -679,7 +679,7 @@ async def _notifica_fureria_telegram(
 ) -> None:
     elenco = "\n".join(
         f"  • {date.fromisoformat(d).strftime('%d/%m/%Y')} {TIPO_LABEL.get(t, t)}"
-        for rid, d, t in ids
+        for _, d, t in ids
     )
     testo = (
         f"📋 Nuove richieste ferie — {w['nome']} {w['cognome']}\n"
