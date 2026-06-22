@@ -22,6 +22,7 @@ import sheets_service
 from config import TELEGRAM_FURERIA_IDS
 from crypto import decrypt, encrypt
 from handlers.fureria import MENU_ESCAPE, MENU_FURERIA
+from handlers.scambio import scambi_riepilogo
 
 logger = logging.getLogger(__name__)
 
@@ -512,33 +513,41 @@ async def mie_richieste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user:
         return
 
+    # ── Ferie ──────────────────────────────────────────────────────────────
     richieste = db.get_requests_by_user(user["id"])
-    if not richieste:
-        await update.message.reply_text("Non hai ancora fatto nessuna richiesta di ferie.")
-        return
+    if richieste:
+        righe = []
+        bottoni_annulla = []
+        for r in richieste:
+            d        = date.fromisoformat(r["data_richiesta"])
+            tipo_str = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
+            prefix   = "❌ " if r["stato"] == "rejected" else ""
+            riga     = f"{prefix}{d.strftime('%d/%m/%Y')} — {tipo_str}"
+            if r["stato"] == "rejected" and r["note_rifiuto"]:
+                riga += f"\n   ↳ _{r['note_rifiuto']}_"
+            righe.append(riga)
+            if r["stato"] == "pending":
+                bottoni_annulla.append([InlineKeyboardButton(
+                    f"❌ Annulla {d.strftime('%d/%m')} — {tipo_str}",
+                    callback_data=f"annulla:{r['id']}",
+                )])
+        await update.message.reply_text(
+            "Le tue richieste ferie:\n\n" + "\n".join(righe),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(bottoni_annulla) if bottoni_annulla else None,
+        )
 
-    righe = []
-    bottoni_annulla = []
-    for r in richieste:
-        d        = date.fromisoformat(r["data_richiesta"])
-        tipo_str = TIPO_LABEL.get(r["tipo_turno"], r["tipo_turno"])
-        prefix   = "❌ " if r["stato"] == "rejected" else ""
-        riga     = f"{prefix}{d.strftime('%d/%m/%Y')} — {tipo_str}"
-        if r["stato"] == "rejected" and r["note_rifiuto"]:
-            riga += f"\n   ↳ _{r['note_rifiuto']}_"
-        righe.append(riga)
-        if r["stato"] == "pending":
-            bottoni_annulla.append([InlineKeyboardButton(
-                f"❌ Annulla {d.strftime('%d/%m')} — {tipo_str}",
-                callback_data=f"annulla:{r['id']}",
-            )])
+    # ── Cambi salto ────────────────────────────────────────────────────────
+    righe_s, bottoni_s = scambi_riepilogo(user)
+    if righe_s:
+        await update.message.reply_text(
+            "I tuoi cambi salto:\n\n" + "\n\n".join(righe_s),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(bottoni_s) if bottoni_s else None,
+        )
 
-    kbd = InlineKeyboardMarkup(bottoni_annulla) if bottoni_annulla else None
-    await update.message.reply_text(
-        "Le tue richieste:\n\n" + "\n".join(righe),
-        parse_mode="Markdown",
-        reply_markup=kbd,
-    )
+    if not richieste and not righe_s:
+        await update.message.reply_text("Non hai ancora nessuna richiesta (ferie o cambio salto).")
 
 
 async def annulla_richiesta_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

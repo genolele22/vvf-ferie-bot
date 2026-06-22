@@ -201,6 +201,33 @@ def _miei_scambi_kbd(miei: list[dict]) -> InlineKeyboardMarkup:
     ])
 
 
+def scambi_riepilogo(user: dict) -> tuple[list[str], list[list[InlineKeyboardButton]]]:
+    """Righe (HTML) + bottoni 'Annulla' dei cambi salto del vigile, per la vista
+    'le mie richieste' di pompiere. A può annullare i propri proposto/confermato."""
+    righe: list[str] = []
+    bottoni: list[list[InlineKeyboardButton]] = []
+    for s in db.scambi_del_vigile(user["id"]):
+        blocco = (date.fromisoformat(s["blocco_inizio"]), date.fromisoformat(s["blocco_fine"]))
+        a_occ = cal.slot_dates_in_blocco(s["slot_a"], blocco)
+        b_occ = cal.slot_dates_in_blocco(s["slot_b"], blocco)
+        io_a       = (s["vigile_a_id"] == user["id"])
+        altro      = s["b_cognome"] if io_a else s["a_cognome"]
+        altro_slot = s["slot_b"]    if io_a else s["slot_a"]
+        mio_occ    = a_occ if io_a else b_occ
+        suo_occ    = b_occ if io_a else a_occ
+        chi        = "proposto da te" if io_a else f"proposto da {s['a_cognome']}"
+        righe.append(
+            f"🔄 con <b>{altro}</b> (B{altro_slot}) — <i>{s['stato']}</i> · {chi}\n"
+            f"   cedi {_fmt(mio_occ) if mio_occ else '?'}, "
+            f"prendi {_fmt(suo_occ) if suo_occ else '?'}"
+        )
+        if io_a and s["stato"] in ("proposto", "confermato"):
+            bottoni.append([InlineKeyboardButton(
+                f"↩️ Annulla scambio con {altro}",
+                callback_data=f"scs:acanc:{s['id']}")])
+    return righe, bottoni
+
+
 async def scambia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     a = db.find_user_by_telegram_id(update.effective_user.id)
     if not a:

@@ -719,6 +719,23 @@ def scambi_attivi_di(vigile_id: int) -> list[dict]:
             return _fixall(cur.fetchall())
 
 
+def scambi_del_vigile(vigile_id: int) -> list[dict]:
+    """Scambi salto che coinvolgono il vigile (come A o come B), ancora
+    rilevanti (proposto/confermato/approvato, blocco non passato).
+    Per la vista 'le mie richieste'."""
+    oggi = datetime.date.today().isoformat()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                _SCAMBIO_SEL + """ WHERE (s.vigile_a_id = %s OR s.vigile_b_id = %s)
+                      AND s.stato IN ('proposto', 'confermato', 'approvato')
+                      AND s.blocco_fine >= %s
+                    ORDER BY s.blocco_inizio""",
+                (vigile_id, vigile_id, oggi),
+            )
+            return _fixall(cur.fetchall())
+
+
 def vigili_impegnati_nel_blocco(blocco_inizio: str) -> set[int]:
     """
     ID dei vigili già coinvolti in uno scambio ATTIVO (proposto/confermato/
